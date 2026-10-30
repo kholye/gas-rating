@@ -3,6 +3,7 @@ import {
   distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid,
 } from './logic.js';
 import { makeApi, isDemo, ApiError } from './api.js';
+import { avatarSvg, kingSvg, reviewAvatar, randomSeed } from './avatar.js';
 
 const $app = document.getElementById('app');
 const ls = {
@@ -17,7 +18,8 @@ const SPB = [59.9386, 30.3141];
 // Код профиля: случайный, живёт в этом браузере; по нему сервер узнаёт «мои» рецензии (имя при этом не нужно).
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
 const loadAuthor = () => { let a = ls.get('gas_author'); if (!isUuid(a)) { a = newId(); ls.set('gas_author', a); } return a; };
-const S = { code: null, author: loadAuthor(), name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', data: null, sums: [], gate: null, err: null, map: null };
+const loadSeed = () => { let n = Number(ls.get('gas_avatar')); if (!Number.isInteger(n) || n < 0 || n > 4294967295 || ls.get('gas_avatar') == null) { n = randomSeed(); ls.set('gas_avatar', String(n)); } return n; };
+const S = { code: null, seed: loadSeed(), author: loadAuthor(), name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', data: null, sums: [], gate: null, err: null, map: null };
 
 // ---------- секретный код: из #k=… в адресе, затем адрес очищается ----------
 {
@@ -59,10 +61,9 @@ const barsHtml = (sc, keys = SCALES.map(([k]) => k)) => `<div class="bars">${key
   const v = sc[k]; const on = v == null ? 0 : Math.round(v);
   return `<span>${SHORT[k].toUpperCase()}</span><span class="seg5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= on ? 'on' : ''}"></i>`).join('')}</span><b>${fmt(v)}</b>`;
 }).join('')}</div>`;
-const avClass = (r) => { if (!r.author_name) return 'av4'; let h = 0; for (const c of r.author_name) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `av${h % 4}`; };
 const toiletStat = (r) => (r.toilet_present === true && r.toilet != null ? `Туалет ${r.toilet}` : r.toilet_present === false ? 'Туалета нет' : '');
 // Рецензия как пост: аватар с линией «ветки», имя, давность, вердикт, текст, фото, показатели.
-const postHtml = (r, last) => `<article class="post"><div class="side"><span class="avatar ${avClass(r)}" aria-hidden="true">${esc(r.author_name ? r.author_name.slice(0, 1).toUpperCase() : '?')}</span>${last ? '' : '<span class="line"></span>'}</div>
+const postHtml = (r, last) => `<article class="post"><div class="side"><span class="av-tile">${reviewAvatar(r, { size: 38, label: `Аватар: ${displayName(r)}` })}</span>${last ? '' : '<span class="line"></span>'}</div>
   <div class="main"><div class="hd"><b>${esc(displayName(r))}</b>${r.mine ? '<span class="ago">· вы</span>' : ''}<span class="ago">· ${esc(ago(r.updated_at || r.created_at))}</span>${stars(r.verdict)}</div>
   ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}<div class="thumbs" data-rid="${r.id}"></div>
   <div class="stats"><span>Вкус ${r.taste}</span><span>Сервис ${r.service}</span><span>Чистота ${r.clean}</span>${toiletStat(r) ? `<span>${toiletStat(r)}</span>` : ''}<span>Доступ ${r.access}</span><span>Впечатл. ${r.impression}</span></div>${S.role === 'admin' ? `<div style="margin-top:10px"><button class="btn danger" style="min-height:34px;padding:0 12px;font-size:13px" data-del="${r.id}">Удалить (админ)</button></div>` : ''}</div></article>`;
@@ -152,7 +153,9 @@ function viewGate() {
 function viewMenu() {
   const rated = S.sums.filter((s) => s.count).length;
   const dots = [10, 30, 50, 70, 90, 110, 130].flatMap((x, i) => [8, 24, 40].map((y, j) => ((i + j) % 3 === 1 || (x === 70 && y === 24) || (x === 110 && y === 24) ? '' : `<circle cx="${x}" cy="${y}" r="2"/>`))).join('');
-  $app.innerHTML = `<header class="bar"><span class="brand">G.A.S. / РЕЙТИНГ</span><span class="grow"></span><button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
+  $app.innerHTML = `<header class="bar mehead"><button class="me-tile" data-act="go" data-view="me" aria-label="Открыть профиль">${S.role === 'admin' ? kingSvg({ size: 52, animate: true, label: 'Ваш аватар' }) : avatarSvg(S.seed, { size: 52, animate: true, label: 'Ваш аватар' })}</button>
+      <div class="grow"><div class="mename">${esc(S.role === 'admin' ? (S.name || 'Админ') : S.name && !S.anon ? S.name : 'Аноним')}</div><div class="label" style="font-size:11px;margin-top:2px">${S.role === 'admin' ? 'админ' : 'участник'} · профиль</div></div>
+      <button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
     ${isDemo ? `<div class="notice">${ico('warn')}<span>Демо-режим: выдуманные примеры. Настоящая база подключается в <code>config.js</code>.</span></div>` : ''}
     <h1 class="hero">Куда<br>едем<i>.</i></h1>
     <button class="tile primary" data-act="go" data-view="slot"><span class="tag">01 · Слот-машина</span><span class="ttl">Выбрать место</span><span class="letters" aria-hidden="true"><b>G</b><b>A</b><b>S</b></span></button>
@@ -163,8 +166,7 @@ function viewMenu() {
         <span class="ttl">Карта</span></button>
     </div>
     <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
-    <div class="foot"><span class="dot"></span><span>${isDemo ? 'демо' : 'база на связи'} · ${S.role === 'admin' ? 'админ' : S.name && !S.anon ? esc(S.name) : 'аноним'}</span>
-      <button class="btn" data-act="go" data-view="me" style="margin-left:auto;min-height:36px;padding:0 12px;font:12px var(--mono)">профиль</button></div>`;
+    <div class="foot"><span class="dot"></span><span>${isDemo ? 'демо' : 'база на связи'}</span></div>`;
 }
 
 function downloadBackup() {
@@ -176,6 +178,9 @@ function downloadBackup() {
 // ---------- профиль: имя, код профиля, ключ доступа ----------
 function viewMe() {
   $app.innerHTML = `${bar('Профиль')}
+    <div class="card" style="display:flex;align-items:center;gap:16px"><span class="me-tile" style="width:96px;height:96px;border-radius:30px;flex:none">${S.role === 'admin' ? kingSvg({ size: 84, animate: true, label: 'Ваш аватар' }) : avatarSvg(S.seed, { size: 84, animate: true, label: 'Ваш аватар' })}</span>
+      <div class="grow"><div class="label">Аватар</div><p class="small muted" style="margin:6px 0 10px">${S.role === 'admin' ? 'Вы админ, у вас особый аватар: корона видна всем в ваших рецензиях (кроме анонимных).' : 'Он выпал случайно и показывается у ваших рецензий. Если не нравится, перебросьте кубик.'}</p>
+      ${S.role === 'admin' ? '' : '<button class="btn" id="reroll">Перебросить кубик</button>'}</div></div>
     <div class="card"><div class="label">Доступ</div>
       <p style="margin:8px 0 0">${S.role === 'admin' ? 'Вы вошли как <b>админ</b>: можно править места, удалять любые рецензии и фото.' : 'Вы вошли как <b>участник</b>: можно добавлять места, оценки и фото, править и удалять только своё.'}</p>
       <label class="lbl" for="newkey">Сменить ключ доступа (ссылка или код)</label>
@@ -192,6 +197,12 @@ function viewMe() {
     <div class="err" id="msg"></div>
     <button class="btn block" id="backup">Скачать копию оценок</button>`;
   const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
+  const reroll = $('#reroll');
+  if (reroll) reroll.onclick = async () => {
+    S.seed = randomSeed(); ls.set('gas_avatar', String(S.seed));
+    try { await api.setAvatar(S.seed); await refresh(); } catch { /* аватар сменится и локально; в рецензиях обновится при следующем сохранении */ }
+    render();
+  };
   $('#pname').oninput = (e) => { S.name = e.target.value; ls.set('gas_name', S.name); };
   $('#panon').onchange = (e) => { S.anon = e.target.checked; ls.set('gas_anon', S.anon ? '1' : '0'); };
   $('#backup').onclick = downloadBackup;
@@ -473,7 +484,7 @@ function viewRate() {
       let id = R.placeId;
       if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind.trim(), address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
       await api.saveReview({
-        place_id: id, name: R.name.trim(), anon: R.anon, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
+        place_id: id, name: R.name.trim(), anon: R.anon, avatar_seed: S.seed, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
         toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
       });
       let failed = 0;

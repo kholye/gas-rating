@@ -31,8 +31,9 @@ const live = (getCode, getAuthor) => {
     saveReview: (r) => call('save_review', {
       p_place_id: r.place_id, p_name: r.anon ? null : r.name, p_anon: !!r.anon, p_verdict: r.verdict, p_access: r.access, p_taste: r.taste,
       p_service: r.service, p_clean: r.clean, p_impression: r.impression,
-      p_toilet_present: r.toilet_present, p_toilet: r.toilet_present ? r.toilet : null, p_comment: r.comment || null,
+      p_toilet_present: r.toilet_present, p_toilet: r.toilet_present ? r.toilet : null, p_comment: r.comment || null, p_avatar_seed: r.avatar_seed ?? null,
     }),
+    setAvatar: (seed) => call('update_avatar', { p_seed: seed }),
     deleteReview: (review_id) => call('delete_review', { p_review_id: review_id }),
     deletePlace: (id) => call('delete_place', { p_id: id }),
     addPhoto: (place_id, b64) => call('add_photo', { p_place_id: place_id, p_data: b64 }),
@@ -91,11 +92,12 @@ const demo = (getCode, getAuthor) => {
     saveReview: async (r) => {
       const now = new Date().toISOString(); const me = getAuthor();
       const i = mem.reviews.findIndex((x) => x.place_id === r.place_id && x.author === me);
-      const row = { ...r, author: me, author_name: r.anon ? null : r.name, toilet: r.toilet_present ? r.toilet : null, updated_at: now };
+      const row = { ...r, author: me, author_name: r.anon ? null : r.name, author_admin: role() === 'admin' && !r.anon, toilet: r.toilet_present ? r.toilet : null, updated_at: now };
       delete row.anon; delete row.name;
       if (i >= 0) mem.reviews[i] = { ...mem.reviews[i], ...row }; else mem.reviews.push({ ...row, id: mem.next++, created_at: now });
       commit();
     },
+    setAvatar: async (seed) => { mem.reviews.forEach((x) => { if (x.author === getAuthor()) x.avatar_seed = seed; }); commit(); },
     deleteReview: async (review_id) => {
       const r = mem.reviews.find((x) => x.id === review_id);
       if (!r || (role() !== 'admin' && r.author !== getAuthor())) forbid();

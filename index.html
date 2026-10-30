@@ -138,13 +138,10 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .thread{margin-top:10px}
 .post{display:flex;gap:12px}
 .post .side{display:flex;flex-direction:column;align-items:center;flex:none}
-.avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;color:#0E0E10;flex:none}
-.av4{background:var(--s2);color:var(--mut);border:1px solid var(--ln2)}
-.av0{background:var(--acc)} .av1{background:#8F82FF} .av2{background:#FFB86B} .av3{background:#7FD6FF}
 .post .line{flex:1;width:2px;margin-top:6px;background:var(--ln);border-radius:1px}
 .post .main{flex:1;min-width:0;padding-bottom:18px}
 .post:last-child .main{padding-bottom:6px}
-.post .hd{display:flex;align-items:center;gap:6px;min-height:42px}
+.post .hd{display:flex;align-items:center;gap:6px;min-height:46px}
 .post .hd b{font-weight:700;font-size:15px}
 .post .hd .ago{font-size:13px;color:var(--mut)}
 .post .hd .badge{margin-left:auto}
@@ -159,6 +156,23 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .thumb .x{position:absolute;top:6px;right:6px;width:30px;height:30px;border-radius:50%;border:1px solid var(--ln2);background:var(--s1);color:var(--bad);line-height:1;font-size:18px;padding:0}
 .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:2000;padding:12px;cursor:zoom-out}
 .lightbox img{max-width:100%;max-height:100%;border-radius:12px}
+
+
+/* аватарки */
+.av-tile{width:46px;height:46px;border-radius:16px;background:var(--s1);border:1px solid var(--ln);display:flex;align-items:center;justify-content:center;flex:none}
+.me-tile{width:60px;height:60px;flex:none;border-radius:20px;border:1px solid var(--ln2);background:var(--s1);display:flex;align-items:center;justify-content:center;padding:0;overflow:visible}
+header.mehead{padding-top:14px}
+.mename{font-weight:700;font-size:17px;letter-spacing:-.01em;overflow-wrap:anywhere}
+@keyframes av-blink{0%,90%,100%{transform:scaleY(1)}94%{transform:scaleY(.08)}}
+@keyframes av-look{0%,40%,100%{transform:translateX(0)}50%,60%{transform:translateX(2.2px)}70%,80%{transform:translateX(-2.2px)}}
+@keyframes av-hop{0%,91%,100%{transform:translateY(0)}94%{transform:translateY(-5px)}97%{transform:translateY(0)}}
+@keyframes av-tw{0%,100%{transform:scale(.35);opacity:.25}50%{transform:scale(1);opacity:1}}
+.av-anim{animation:av-hop 9s ease-in-out infinite;transform-origin:50% 100%}
+.av-anim .eyes{animation:av-look 7s ease-in-out infinite}
+.av-anim .blink{transform-box:fill-box;transform-origin:center;animation:av-blink 4.6s ease-in-out infinite;animation-delay:var(--d,0s)}
+.av-anim .tw{transform-box:fill-box;transform-origin:center;animation:av-tw 2.4s ease-in-out infinite}
+.avatar-svg{display:block}
+@media (prefers-reduced-motion: reduce){.av-anim,.av-anim .eyes,.av-anim .blink,.av-anim .tw{animation:none}}
 
 /* форма */
 .seg{display:flex;gap:6px;flex-wrap:wrap}
