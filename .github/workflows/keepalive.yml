@@ -1,0 +1,29 @@
+# Будильник: раз в ~3 дня читает настоящие данные из базы, чтобы бесплатный Supabase не засыпал.
+# Успех = HTTP 200 и в ответе есть список участников. Иначе задача падает, и GitHub присылает письмо.
+name: keepalive
+
+on:
+  schedule:
+    - cron: '17 6 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Прочитать данные из базы
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          GAS_CODE: ${{ secrets.GAS_CODE }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GAS_CODE"
+          auth=()
+          case "$SUPABASE_ANON_KEY" in sb_*) ;; *) auth=(-H "Authorization: Bearer $SUPABASE_ANON_KEY") ;; esac
+          code=$(curl -sS -o body.json -w '%{http_code}' -X POST "$SUPABASE_URL/rest/v1/rpc/get_all" \
+            -H "apikey: $SUPABASE_ANON_KEY" "${auth[@]}" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg c "$GAS_CODE" '{p_code:$c}')")
+          if [ "$code" != "200" ]; then echo "База ответила HTTP $code (код устарел? проект спит?)"; exit 1; fi
+          jq -e '(.members | length) > 0' body.json > /dev/null || { echo "Ответ пустой: нет участников"; exit 1; }
+          echo "База отвечает: мест $(jq '.places | length' body.json), рецензий $(jq '.reviews | length' body.json)"
