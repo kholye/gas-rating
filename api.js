@@ -33,6 +33,9 @@ const live = (getCode) => {
     }),
     deleteReview: (place_id, reviewer) => call('delete_review', { p_place_id: place_id, p_reviewer: reviewer }),
     deletePlace: (id) => call('delete_place', { p_id: id }),
+    addPhoto: (place_id, reviewer, b64) => call('add_photo', { p_place_id: place_id, p_reviewer: reviewer, p_data: b64 }),
+    getPhotos: (place_id) => call('get_photos', { p_place_id: place_id }),
+    deletePhoto: (id) => call('delete_photo', { p_id: id }),
   };
 };
 
@@ -65,6 +68,8 @@ const demo = () => {
   const save = (d) => { try { localStorage.setItem(DEMO_KEY, JSON.stringify(d)); } catch { /* нет хранилища: изменения живут до перезагрузки */ } };
   let mem = load();
   const commit = () => save(mem);
+  const photos = []; // в демо фото живут только до перезагрузки страницы (чтобы не переполнить хранилище)
+  let nextPhoto = 1;
   return {
     getAll: async () => structuredClone(mem),
     savePlace: async (p) => {
@@ -78,7 +83,17 @@ const demo = () => {
       if (i >= 0) mem.reviews[i] = { ...mem.reviews[i], ...row }; else mem.reviews.push({ ...row, created_at: now });
       commit();
     },
-    deleteReview: async (place_id, reviewer) => { mem.reviews = mem.reviews.filter((x) => !(x.place_id === place_id && x.reviewer === reviewer)); commit(); },
+    deleteReview: async (place_id, reviewer) => {
+      mem.reviews = mem.reviews.filter((x) => !(x.place_id === place_id && x.reviewer === reviewer));
+      for (let i = photos.length - 1; i >= 0; i--) if (photos[i].place_id === place_id && photos[i].reviewer === reviewer) photos.splice(i, 1);
+      commit();
+    },
+    addPhoto: async (place_id, reviewer, data) => {
+      if (photos.filter((p) => p.place_id === place_id && p.reviewer === reviewer).length >= 5) throw new ApiError('rejected', 'too_many_photos');
+      photos.push({ id: nextPhoto++, place_id, reviewer, data }); return nextPhoto - 1;
+    },
+    getPhotos: async (place_id) => photos.filter((p) => p.place_id === place_id).map(({ id, reviewer, data }) => ({ id, reviewer, data })),
+    deletePhoto: async (id) => { const i = photos.findIndex((p) => p.id === id); if (i >= 0) photos.splice(i, 1); },
     deletePlace: async (id) => {
       if (mem.reviews.some((x) => x.place_id === id)) throw new ApiError('rejected', 'place_has_reviews');
       mem.places = mem.places.filter((p) => p.id !== id); commit();

@@ -96,3 +96,36 @@ export function parsePastedLink(text) {
   const m = /[#&]k=([^&\s]+)/.exec(t);
   return m ? decodeURIComponent(m[1]) : t || null;
 }
+
+// Разногласие: вердикты расходятся на 2 звезды и больше, либо одна шкала — на 3 и больше. Меньше двух рецензий — null.
+export function disagreement(reviews) {
+  if (reviews.length < 2) return null;
+  const vs = reviews.map((r) => r.verdict);
+  const verdict = Math.max(...vs) - Math.min(...vs) >= 2;
+  const scales = SCALES.filter(([k]) => {
+    const xs = reviews.map((r) => scoreOf(r, k)).filter((v) => v != null);
+    return xs.length >= 2 && Math.max(...xs) - Math.min(...xs) >= 3;
+  }).map(([, name]) => name);
+  return verdict || scales.length ? { verdict, scales } : null;
+}
+
+// Подкрутка слота: больше шансов у 3-звёздочных, у мест, где давно не были (по дате последней рецензии), и у тех, что ближе.
+export function slotWeights(pool, { center = null, now = Date.now() } = {}) {
+  return pool.map((s) => {
+    let w = s.stars === 3 ? 1.5 : 1;
+    const last = Math.max(0, ...s.reviews.map((r) => Date.parse(r.updated_at || r.created_at) || 0));
+    const days = (now - last) / 864e5;
+    w *= days >= 60 ? 1.6 : days >= 30 ? 1.3 : 1;
+    if (center) {
+      const km = distanceKm(center.lat, center.lon, s.place.lat, s.place.lon);
+      w *= km <= 2 ? 1.5 : km <= 5 ? 1.2 : 1;
+    }
+    return w;
+  });
+}
+
+export function pickWeighted(items, weights, rnd = Math.random) {
+  let x = rnd() * weights.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < items.length; i++) { x -= weights[i]; if (x < 0) return items[i]; }
+  return items[items.length - 1];
+}

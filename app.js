@@ -1,6 +1,6 @@
 import {
   SCALES, summarize, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted,
 } from './logic.js';
 import { makeApi, isDemo, ApiError } from './api.js';
 
@@ -163,7 +163,7 @@ function viewList() {
     $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
-      <div class="chips"><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценили ${s.count} из ${s.memberCount}</span></div></button>`).join('')
+      <div class="chips"><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценили ${s.count} из ${s.memberCount}</span>${disagreement(s.reviews) ? '<span class="chip warn">разногласие</span>' : ''}</div></button>`).join('')
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
   };
   $app.querySelector('#q').oninput = (e) => { LST.q = e.target.value; paint(); };
@@ -180,9 +180,10 @@ function viewDetail() {
   $app.innerHTML = `${bar(p.name)}
     <div class="card"><div class="row"><div class="grow">${stars(s.stars)}<div class="meta muted small">${esc(p.kind || '')} · ${esc(p.address)}</div></div></div>
       ${s.count ? scoresHtml(s.scores) : ''}
+      ${(() => { const d = disagreement(s.reviews); return d ? `<div class="notice">Мнения расходятся${d.verdict ? ': вердикты от ' + Math.min(...s.reviews.map((r) => r.verdict)) + ' до ' + Math.max(...s.reviews.map((r) => r.verdict)) + ' звёзд' : ''}${d.scales.length ? (d.verdict ? '; ' : ': ') + 'сильно разные оценки: ' + d.scales.join(', ').toLowerCase() : ''}.</div>` : ''; })()}
       <div class="row wrap" style="margin-top:12px"><a class="btn" style="display:inline-flex;align-items:center;text-decoration:none" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
         <button class="btn accent" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою рецензию' : 'Оценить'}</button></div></div>
-    ${s.reviews.map((r) => `<div class="card"><div class="row"><b class="grow">${esc(r.reviewer)}</b>${stars(r.verdict)}</div>${reviewScores(r)}${r.comment ? `<p>${esc(r.comment)}</p>` : ''}</div>`).join('') || '<p class="muted">Пока нет рецензий.</p>'}
+    ${s.reviews.map((r) => `<div class="card"><div class="row"><b class="grow">${esc(r.reviewer)}</b>${stars(r.verdict)}</div>${reviewScores(r)}${r.comment ? `<p>${esc(r.comment)}</p>` : ''}<div class="thumbs" data-who="${esc(r.reviewer)}"></div></div>`).join('') || '<p class="muted">Пока нет рецензий.</p>'}
     <div class="err" id="msg"></div>
     <div class="row wrap">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
   const msg = $app.querySelector('#msg');
@@ -190,7 +191,48 @@ function viewDetail() {
   if (del) del.onclick = () => confirm('Удалить вашу рецензию?') && guard(async () => { await api.deleteReview(p.id, S.me); await refresh(); go('detail', { id: p.id }, true); }, msg);
   const dp = $app.querySelector('#delplace');
   if (dp) dp.onclick = () => confirm('Удалить заведение?') && guard(async () => { await api.deletePlace(p.id); await refresh(); go('list', {}, true); }, msg);
+  if (s.count) loadPhotos(p.id);
 }
+
+// ---------- фото ----------
+const openPhoto = (src) => {
+  const box = Object.assign(document.createElement('div'), { className: 'lightbox', innerHTML: `<img src="${src}" alt="Фото">` });
+  box.onclick = () => box.remove(); document.body.appendChild(box);
+};
+async function loadPhotos(placeId) {
+  let list;
+  try { list = await api.getPhotos(placeId); } catch { return; } // без фото страница остаётся рабочей
+  if (cur.view !== 'detail' || cur.p.id !== placeId) return;
+  for (const ph of list) {
+    const box = [...$app.querySelectorAll('.thumbs[data-who]')].find((b) => b.dataset.who === ph.reviewer); if (!box) continue;
+    const src = `data:image/jpeg;base64,${ph.data}`;
+    const wrap = Object.assign(document.createElement('span'), { className: 'thumb' });
+    const img = Object.assign(document.createElement('img'), { src, alt: 'Фото', loading: 'lazy' });
+    img.onclick = () => openPhoto(src); wrap.appendChild(img);
+    if (ph.reviewer === S.me) {
+      const x = Object.assign(document.createElement('button'), { type: 'button', className: 'x', textContent: '×' });
+      x.setAttribute('aria-label', 'Удалить фото');
+      x.onclick = () => confirm('Удалить это фото?') && guard(async () => { await api.deletePhoto(ph.id); wrap.remove(); }, $app.querySelector('#msg'));
+      wrap.appendChild(x);
+    }
+    box.appendChild(wrap);
+  }
+}
+// Сжатие на телефоне: стороны до 1280 px, JPEG ≤ 350 КБ; при перерисовке теряются данные EXIF (в том числе место съёмки).
+async function compress(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  let max = 1280; let q = 0.78;
+  for (let i = 0; i < 6; i++) {
+    const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const c = Object.assign(document.createElement('canvas'), { width: Math.round(bmp.width * k), height: Math.round(bmp.height * k) });
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', q));
+    if (blob && blob.size <= 350000) return blob;
+    q -= 0.08; max *= 0.85;
+  }
+  throw new Error('photo_too_big');
+}
+const toBase64 = (blob) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
 
 // ---------- карта ----------
 const needLeaflet = () => {
@@ -238,7 +280,7 @@ const seg = (name, vals, labels, cur) => `<div class="seg" role="radiogroup">${v
 
 function startForm(placeId) {
   const base = { reviewer: S.me && S.data.members.includes(S.me) ? S.me : '', placeId: placeId ?? null, mode: placeId ? 'exist' : 'new',
-    np: { name: '', kind: '', address: '', lat: null, lon: null }, verdict: null, toilet_present: undefined, toilet: null, comment: '', found: [] };
+    np: { name: '', kind: '', address: '', lat: null, lon: null }, verdict: null, toilet_present: undefined, toilet: null, comment: '', found: [], photos: [] };
   SCALE_KEYS.forEach(([k]) => { base[k] = null; });
   R = base; prefill();
 }
@@ -274,14 +316,25 @@ function viewRate() {
     ${SCALE_KEYS.map(([k, n]) => `<div class="scale-row"><div class="name">${n}</div>${seg(k, [1, 2, 3, 4, 5], null, R[k])}</div>`).join('')}
     <div class="scale-row"><div class="name">Туалет</div>${seg('toilet_present', ['yes', 'no', 'unknown'], ['Есть', 'Нет', 'Не помню'], tp === true ? 'yes' : tp === false ? 'no' : tp)}</div>
     ${tp === true ? `<div class="scale-row"><div class="name">Оценка туалета</div>${seg('toilet', [1, 2, 3, 4, 5], null, R.toilet)}</div>` : ''}
+    <label class="lbl" for="ph">Фото (до 5 на рецензию; сожмутся на телефоне)</label>
+    <div class="thumbs">${R.photos.map((ph, i) => `<span class="thumb"><img src="${ph.url}" alt=""><button type="button" class="x" data-rm="${i}" aria-label="Убрать фото">×</button></span>`).join('')}</div>
+    <input type="file" id="ph" accept="image/*" multiple ${R.photos.length >= 5 ? 'disabled' : ''}>
     <label class="lbl" for="cm">Комментарий</label><textarea id="cm" name="comment" maxlength="2000">${esc(R.comment)}</textarea>
     <div class="err" id="msg" role="alert"></div>
     <button class="btn accent block" id="send" style="margin-top:14px">Отправить</button></form>`;
 
   const f = $app.querySelector('#f'); const msg = f.querySelector('#msg');
   const redraw = () => { const y = window.scrollY; viewRate(); window.scrollTo(0, y); };
-  f.addEventListener('change', (e) => {
+  f.addEventListener('change', async (e) => {
     const { name, value } = e.target;
+    if (e.target.id === 'ph') {
+      msg.textContent = '';
+      for (const file of [...e.target.files].slice(0, 5 - R.photos.length)) {
+        try { const blob = await compress(file); R.photos.push({ blob, url: URL.createObjectURL(blob) }); }
+        catch { msg.textContent = 'Не удалось подготовить одно из фото (формат или размер).'; }
+      }
+      redraw(); return;
+    }
     if (name === 'reviewer') { R.reviewer = value; if (value) { S.me = value; ls.set('gas_me', value); } prefill(); redraw(); }
     else if (name === 'place') { R.placeId = value ? Number(value) : null; R.mode = value ? 'exist' : 'new'; prefill(); redraw(); }
     else if (name === 'verdict') R.verdict = Number(value);
@@ -295,6 +348,7 @@ function viewRate() {
   });
   const redrawKeepFocus = () => { const id = document.activeElement?.id; redraw(); if (id) document.getElementById(id)?.focus(); };
   f.addEventListener('click', (e) => {
+    const rm = e.target.closest('[data-rm]'); if (rm) { const [gone] = R.photos.splice(Number(rm.dataset.rm), 1); URL.revokeObjectURL(gone.url); redraw(); return; }
     const pk = e.target.closest('[data-pick]'); if (pk) { e.preventDefault(); R.placeId = Number(pk.dataset.pick); R.mode = 'exist'; prefill(); redraw(); }
     const fd = e.target.closest('[data-found]'); if (fd) { const x = R.found[fd.dataset.found]; R.np.lat = +(+x.lat).toFixed(6); R.np.lon = +(+x.lon).toFixed(6); R.np.address = R.np.address || x.display_name; R.found = []; redraw(); }
   });
@@ -335,13 +389,19 @@ function viewRate() {
         place_id: id, reviewer: R.reviewer, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
         toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
       });
+      let failed = 0;
+      for (const ph of R.photos) {
+        try { await api.addPhoto(id, R.reviewer, await toBase64(ph.blob)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
+        URL.revokeObjectURL(ph.url);
+      }
       R = null; await refresh(); go('detail', { id }, true);
+      if (failed) alert(`Рецензия сохранена, но ${failed} фото не загрузились (возможно, уже 5 фото или нет связи). Добавьте их через «Изменить мою рецензию».`);
     }, msg).finally(() => { e.target.disabled = false; });
   };
 }
 
 // ---------- слот-машина ----------
-const T = { nearby: ls.get('gas_nearby') !== '0', center: null, radius: 5, geo: 'idle', spinning: false, manual: false };
+const T = { rig: ls.get('gas_rig') !== '0', nearby: ls.get('gas_nearby') !== '0', center: null, radius: 5, geo: 'idle', spinning: false, manual: false };
 const CELL = 84;
 function viewSlot() {
   T.geo = T.geo === 'idle' && T.nearby ? 'asking' : T.geo;
@@ -355,6 +415,7 @@ function viewSlot() {
   };
   $app.innerHTML = `${bar('Куда едем сегодня?')}
     <label class="switch"><input type="checkbox" id="nb" ${T.nearby ? 'checked' : ''}><span>Только рядом</span></label>
+    <label class="switch"><input type="checkbox" id="rig" ${T.rig ? 'checked' : ''}><span>Подкрутка (чаще выпадают места с 3 звёздами, где давно не были и что ближе)</span></label>
     <div class="small muted" id="st"></div>
     <div id="pickwrap" class="${T.manual ? '' : 'hidden'}"><div id="pickmap"></div></div>
     <div class="row wrap" id="geoBtns" style="margin:6px 0"></div>
@@ -392,13 +453,14 @@ function viewSlot() {
     else if (T.nearby && !T.center) locate();
     paintStatus();
   };
+  $('#rig').onchange = (e) => { T.rig = e.target.checked; ls.set('gas_rig', T.rig ? '1' : '0'); };
   paintStatus(); locate();
 
   $('#lever').onclick = () => {
     const p = pool(); if (!p.length || T.spinning) return;
     T.spinning = true; $('#lever').disabled = true; $('#out').innerHTML = '';
     const lever = $('#lever'); lever.classList.add('pulled'); setTimeout(() => lever.classList.remove('pulled'), 220);
-    const win = p[Math.floor(Math.random() * p.length)];
+    const win = T.rig ? pickWeighted(p, slotWeights(p, { center: T.nearby ? T.center : null })) : p[Math.floor(Math.random() * p.length)];
     const names = p.map((s) => s.place.name);
     const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
     let done = 0;
