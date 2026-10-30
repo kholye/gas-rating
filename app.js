@@ -1,6 +1,6 @@
 import {
   SCALES, summarize, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago,
 } from './logic.js';
 import { makeApi, isDemo, ApiError } from './api.js';
 
@@ -35,16 +35,34 @@ const cycleTheme = () => {
   ls.set('gas_theme', next ?? 'auto'); applyTheme();
 };
 applyTheme();
-const themeIcon = () => ({ light: '☀', dark: '☾' }[ls.get('gas_theme')] ?? '◐');
+const ICON = {
+  back: '<path d="M15 6l-6 6 6 6"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+  auto: '<circle cx="12" cy="12" r="8"/><path d="M12 4v16"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  warn: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+};
+const ico = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
+const themeIcon = () => ico({ light: 'sun', dark: 'moon' }[ls.get('gas_theme')] ?? 'auto');
 
 // ---------- общие куски разметки ----------
-const stars = (n) => (n == null ? '<span class="muted small">нет оценок</span>'
-  : n === 0 ? '<span class="zero">0 · не рекомендуем</span>'
-  : `<span class="stars" aria-label="${n} из 3 звёзд">${'★'.repeat(n)}<span class="off">${'★'.repeat(3 - n)}</span></span>`);
-const bar = (title, back = true) => `<header class="bar">${back ? '<button class="back" data-act="back">‹ Назад</button>' : ''}<h1>${esc(title)}</h1><button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>`;
-const scoresHtml = (sc) => `<div class="scores">${SCALES.map(([k, n]) => `<div><span>${n}</span><b>${fmt(sc[k])}</b></div>`).join('')}</div>`;
-const toiletText = (r) => (r.toilet_present === true ? String(r.toilet ?? '—') : r.toilet_present === false ? 'нет' : 'не помню');
-const reviewScores = (r) => `<div class="scores">${SCALES.map(([k, n]) => `<div><span>${n}</span><b>${k === 'toilet' ? toiletText(r) : r[k]}</b></div>`).join('')}</div>`;
+const stars = (n) => (n == null ? '<span class="badge">—</span>' : `<span class="badge b${n}" aria-label="${n} из 3">${n}/3</span>`);
+const bar = (title, back = true) => `<header class="bar">${back ? `<button class="icon-btn" data-act="back" aria-label="Назад">${ico('back')}</button>` : ''}<h1>${esc(title)}</h1><button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>`;
+const SHORT = { access: 'Доступ', taste: 'Вкус', service: 'Сервис', clean: 'Чистота', toilet: 'Туалет', impression: 'Впечатл.' };
+// Шкалы в виде 5 полосок: заполнено столько, сколько округлённая оценка.
+const barsHtml = (sc, keys = SCALES.map(([k]) => k)) => `<div class="bars">${keys.map((k) => {
+  const v = sc[k]; const on = v == null ? 0 : Math.round(v);
+  return `<span>${SHORT[k].toUpperCase()}</span><span class="seg5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= on ? 'on' : ''}"></i>`).join('')}</span><b>${fmt(v)}</b>`;
+}).join('')}</div>`;
+const avClass = (name) => `av${Math.max(0, S.data.members.indexOf(name)) % 4}`;
+const toiletStat = (r) => (r.toilet_present === true && r.toilet != null ? `Туалет ${r.toilet}` : r.toilet_present === false ? 'Туалета нет' : '');
+// Рецензия как пост: аватар с линией «ветки», имя, давность, вердикт, текст, фото, показатели.
+const postHtml = (r, last) => `<article class="post"><div class="side"><span class="avatar ${avClass(r.reviewer)}" aria-hidden="true">${esc(r.reviewer.slice(0, 1).toUpperCase())}</span>${last ? '' : '<span class="line"></span>'}</div>
+  <div class="main"><div class="hd"><b>${esc(r.reviewer)}</b><span class="ago">· ${esc(ago(r.updated_at || r.created_at))}</span>${stars(r.verdict)}</div>
+  ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}<div class="thumbs" data-who="${esc(r.reviewer)}"></div>
+  <div class="stats"><span>Вкус ${r.taste}</span><span>Сервис ${r.service}</span><span>Чистота ${r.clean}</span>${toiletStat(r) ? `<span>${toiletStat(r)}</span>` : ''}<span>Доступ ${r.access}</span><span>Впечатл. ${r.impression}</span></div></div></article>`;
 
 // ---------- данные ----------
 function build(data) {
@@ -130,16 +148,21 @@ function viewGate() {
 function viewMenu() {
   const rated = S.sums.filter((s) => s.count).length;
   const me = S.me && S.data.members.includes(S.me) ? S.me : '';
-  $app.innerHTML = `${bar('G.A.S. Rating', false)}
-    ${isDemo ? '<div class="notice">Демо-режим: выдуманные примеры. Настоящая база подключается в <code>config.js</code>.</div>' : ''}
-    <p class="muted" style="margin-top:0">Мест оценено: <b>${rated}</b> · нас ${S.data.members.length}</p>
-    <button class="menu-btn primary" data-act="go" data-view="slot"><span class="ico">🎰</span><span><b>Куда едем сегодня?</b><small>слот-машина решит за нас</small></span></button>
-    <button class="menu-btn" data-act="go" data-view="list"><span class="ico">📋</span><span><b>Все оценённые</b><small>список, поиск, фильтры</small></span></button>
-    <button class="menu-btn" data-act="go" data-view="map"><span class="ico">🗺</span><span><b>Карта</b><small>где что находится</small></span></button>
-    <button class="menu-btn" data-act="go" data-view="rate"><span class="ico">✍️</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
-    <div class="row wrap" style="margin-top:18px"><label class="small muted" for="me">Вы:</label>
-      <select id="me" style="width:auto;flex:1"><option value="">— выберите —</option>${S.data.members.map((m) => `<option ${m === me ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
-      <button class="btn" id="backup">Скачать копию</button></div>`;
+  const dots = [10, 30, 50, 70, 90, 110, 130].flatMap((x, i) => [8, 24, 40].map((y, j) => ((i + j) % 3 === 1 || (x === 70 && y === 24) || (x === 110 && y === 24) ? '' : `<circle cx="${x}" cy="${y}" r="2"/>`))).join('');
+  $app.innerHTML = `<header class="bar"><span class="brand">G.A.S. / РЕЙТИНГ</span><span class="grow"></span><button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
+    ${isDemo ? `<div class="notice">${ico('warn')}<span>Демо-режим: выдуманные примеры. Настоящая база подключается в <code>config.js</code>.</span></div>` : ''}
+    <h1 class="hero">Куда<br>едем<i>.</i></h1>
+    <button class="tile primary" data-act="go" data-view="slot"><span class="tag">01 · Слот-машина</span><span class="ttl">Выбрать место</span><span class="letters" aria-hidden="true"><b>G</b><b>A</b><b>S</b></span></button>
+    <div class="grid2">
+      <button class="tile sq" data-act="go" data-view="list"><span class="tag">02 · Список</span><span><span class="num">${String(rated).padStart(2, '0')}</span><span class="ttl">Все оценённые</span></span></button>
+      <button class="tile sq map" data-act="go" data-view="map"><span class="tag">03 · Карта</span>
+        <svg class="dots" viewBox="0 0 140 44" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g fill="var(--ln2)">${dots}</g><circle cx="70" cy="24" r="5" fill="var(--acc)"/><circle cx="110" cy="24" r="4" fill="var(--vio)"/></svg>
+        <span class="ttl">Карта</span></button>
+    </div>
+    <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
+    <div class="foot"><span class="dot"></span><span>${isDemo ? 'демо' : 'база на связи'} · вы:</span>
+      <select id="me" aria-label="Кто вы"><option value="">—</option>${S.data.members.map((m) => `<option ${m === me ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
+      <button class="btn" id="backup" style="margin-left:auto;min-height:36px;padding:0 12px;font:12px var(--mono)">копия</button></div>`;
   $app.querySelector('#me').onchange = (e) => { S.me = e.target.value || null; ls.set('gas_me', S.me || ''); };
   $app.querySelector('#backup').onclick = () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(S.data, null, 2)], { type: 'application/json' }));
@@ -177,15 +200,18 @@ function viewDetail() {
   const s = sumById(cur.p.id);
   if (!s) return go('list', {}, true);
   const p = s.place; const mine = s.reviews.find((r) => r.reviewer === S.me);
-  $app.innerHTML = `${bar(p.name)}
-    <div class="card"><div class="row"><div class="grow">${stars(s.stars)}<div class="meta muted small">${esc(p.kind || '')} · ${esc(p.address)}</div></div></div>
-      ${s.count ? scoresHtml(s.scores) : ''}
-      ${(() => { const d = disagreement(s.reviews); return d ? `<div class="notice">Мнения расходятся${d.verdict ? ': вердикты от ' + Math.min(...s.reviews.map((r) => r.verdict)) + ' до ' + Math.max(...s.reviews.map((r) => r.verdict)) + ' звёзд' : ''}${d.scales.length ? (d.verdict ? '; ' : ': ') + 'сильно разные оценки: ' + d.scales.join(', ').toLowerCase() : ''}.</div>` : ''; })()}
-      <div class="row wrap" style="margin-top:12px"><a class="btn" style="display:inline-flex;align-items:center;text-decoration:none" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
-        <button class="btn accent" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою рецензию' : 'Оценить'}</button></div></div>
-    ${s.reviews.map((r) => `<div class="card"><div class="row"><b class="grow">${esc(r.reviewer)}</b>${stars(r.verdict)}</div>${reviewScores(r)}${r.comment ? `<p>${esc(r.comment)}</p>` : ''}<div class="thumbs" data-who="${esc(r.reviewer)}"></div></div>`).join('') || '<p class="muted">Пока нет рецензий.</p>'}
+  const d = disagreement(s.reviews);
+  const vs = s.reviews.map((r) => r.verdict);
+  $app.innerHTML = `${bar('')}
+    <div class="ph-head"><div class="grow"><div class="label">${esc(p.kind || 'место')}</div><h1>${esc(p.name)}</h1><div class="muted small" style="margin-top:8px">${esc(p.address)}</div></div>
+      ${s.stars == null ? '' : `<div class="big b${s.stars}">${s.stars}<small>/3</small></div>`}</div>
+    ${s.count ? barsHtml(s.scores) : '<p class="muted">Пока нет рецензий.</p>'}
+    ${d ? `<div class="notice">${ico('warn')}<span>Мнения расходятся${d.verdict ? `: вердикты от ${Math.min(...vs)} до ${Math.max(...vs)} звёзд` : ''}${d.scales.length ? `${d.verdict ? '; ' : ': '}сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : ''}
+    <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
+      <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою' : 'Оценить'}</button></div>
+    ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
     <div class="err" id="msg"></div>
-    <div class="row wrap">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
+    <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
   const msg = $app.querySelector('#msg');
   const del = $app.querySelector('#delrev');
   if (del) del.onclick = () => confirm('Удалить вашу рецензию?') && guard(async () => { await api.deleteReview(p.id, S.me); await refresh(); go('detail', { id: p.id }, true); }, msg);
@@ -311,13 +337,13 @@ function viewRate() {
       <div id="pickmap"></div>
       ${dups.length ? `<div class="notice">Похоже, такое место уже есть: ${dups.map((d) => `<a href="#" data-pick="${d.id}">${esc(d.name)}</a>`).join(', ')}. Нажмите на название, чтобы оценить его.</div>` : ''}` : ''}
     <label class="lbl">Общий вердикт G.A.S.</label>
-    ${seg('verdict', [0, 1, 2, 3], ['0 · нет', '★', '★★', '★★★'], R.verdict)}
+    ${seg('verdict', [0, 1, 2, 3], ['0', '1', '2', '3'], R.verdict)}
     <div class="small muted" style="margin-top:4px">3 — ехать специально · 2 — стоит развернуться · 1 — рекомендуем, но не поедем · 0 — не рекомендуем</div>
     ${SCALE_KEYS.map(([k, n]) => `<div class="scale-row"><div class="name">${n}</div>${seg(k, [1, 2, 3, 4, 5], null, R[k])}</div>`).join('')}
     <div class="scale-row"><div class="name">Туалет</div>${seg('toilet_present', ['yes', 'no', 'unknown'], ['Есть', 'Нет', 'Не помню'], tp === true ? 'yes' : tp === false ? 'no' : tp)}</div>
     ${tp === true ? `<div class="scale-row"><div class="name">Оценка туалета</div>${seg('toilet', [1, 2, 3, 4, 5], null, R.toilet)}</div>` : ''}
     <label class="lbl" for="ph">Фото (до 5 на рецензию; сожмутся на телефоне)</label>
-    <div class="thumbs">${R.photos.map((ph, i) => `<span class="thumb"><img src="${ph.url}" alt=""><button type="button" class="x" data-rm="${i}" aria-label="Убрать фото">×</button></span>`).join('')}</div>
+    <div class="form-thumbs">${R.photos.map((ph, i) => `<span class="thumb"><img src="${ph.url}" alt=""><button type="button" class="x" data-rm="${i}" aria-label="Убрать фото">×</button></span>`).join('')}</div>
     <input type="file" id="ph" accept="image/*" multiple ${R.photos.length >= 5 ? 'disabled' : ''}>
     <label class="lbl" for="cm">Комментарий</label><textarea id="cm" name="comment" maxlength="2000">${esc(R.comment)}</textarea>
     <div class="err" id="msg" role="alert"></div>
@@ -402,36 +428,49 @@ function viewRate() {
 
 // ---------- слот-машина ----------
 const T = { rig: ls.get('gas_rig') !== '0', nearby: ls.get('gas_nearby') !== '0', center: null, radius: 5, geo: 'idle', spinning: false, manual: false };
-const CELL = 84;
+const ROW = 40; // высота строки барабана, px (как в стилях .reel .cell)
+const G = () => window.gsap; // если GSAP не загрузился, всё работает без анимации
+const calm = () => !G() || matchMedia('(prefers-reduced-motion: reduce)').matches;
+const rnd = (a, b) => a + Math.random() * (b - a);
+
 function viewSlot() {
-  T.geo = T.geo === 'idle' && T.nearby ? 'asking' : T.geo;
   const pool = () => slotPool(S.sums, { nearby: T.nearby, center: T.center, radiusKm: T.radius });
   const status = () => {
-    if (!T.nearby && T.geo === 'failed') return 'Геолокация недоступна, поэтому поиск рядом выключен. Включите «Только рядом» и поставьте точку на карте.';
+    if (!T.nearby && T.geo === 'failed') return 'Геолокация недоступна, поэтому поиск рядом выключен. Включите «Рядом» и поставьте точку на карте.';
     if (!T.nearby) return 'Поиск по радиусу выключен: берём любое место на 2–3 звезды.';
     if (T.geo === 'asking') return 'Определяю, где вы…';
-    if (!T.center) return 'Не знаю, где вы. Поставьте точку на карте или выключите «Только рядом».';
+    if (!T.center) return 'Не знаю, где вы. Поставьте точку на карте или выключите «Рядом».';
     return `Ищу в радиусе ${T.radius} км от ${T.manual ? 'выбранной точки' : 'вас'}.`;
   };
-  $app.innerHTML = `${bar('Куда едем сегодня?')}
-    <label class="switch"><input type="checkbox" id="nb" ${T.nearby ? 'checked' : ''}><span>Только рядом</span></label>
-    <label class="switch"><input type="checkbox" id="rig" ${T.rig ? 'checked' : ''}><span>Подкрутка (чаще выпадают места с 3 звёздами, где давно не были и что ближе)</span></label>
-    <div class="small muted" id="st"></div>
+  $app.innerHTML = `${bar('Куда едем')}
+    <div class="pills"><label class="pill"><input type="checkbox" id="nb" ${T.nearby ? 'checked' : ''}><span>Рядом</span></label>
+      <label class="pill"><input type="checkbox" id="rig" ${T.rig ? 'checked' : ''}><span>Подкрутка</span></label></div>
+    <div class="small muted" id="st" style="margin-top:10px"></div>
     <div id="pickwrap" class="${T.manual ? '' : 'hidden'}"><div id="pickmap"></div></div>
-    <div class="row wrap" id="geoBtns" style="margin:6px 0"></div>
-    <div class="machine"><div class="reels" aria-hidden="true">${[0, 1, 2].map((i) => `<div class="reel" id="reel${i}"><div class="strip"><div class="cell">${['G', 'A', 'S'][i]}</div></div></div>`).join('')}</div>
-      <button class="lever" id="lever" aria-label="Дёрнуть ручку"><span class="rod"></span><span class="knob"></span><span class="base"></span></button></div>
+    <div class="row wrap" id="geoBtns" style="margin-top:8px"></div>
+    <div class="machine" id="machine">
+      <div class="reels" aria-hidden="true"><div class="band"></div>${[0, 1, 2].map((i) => `<div class="reel" id="reel${i}"><div class="strip"><div class="cell"></div><div class="cell idle">${'GAS'[i]}</div><div class="cell"></div></div></div>`).join('')}</div>
+      <div class="handle" id="handle" role="group" aria-label="Ручка слот-машины"><span class="hint">ПОТЯНИ</span><button type="button" class="knob" id="knob" aria-label="Дёрнуть ручку">${ico('arrow')}</button></div>
+    </div>
     <div id="out" aria-live="polite"></div>`;
   const $ = (s) => $app.querySelector(s);
+  const knob = $('#knob'); const handle = $('#handle');
+  const maxX = () => handle.clientWidth - knob.offsetWidth - 10;
+  const hint = !calm() ? G().to(knob, { x: 8, duration: 0.8, yoyo: true, repeat: -1, ease: 'sine.inOut' }) : null;
+
   const paintStatus = () => {
     $('#st').textContent = status();
     const empty = pool().length === 0;
+    $('#nb + span').textContent = T.nearby ? `Рядом · ${T.radius} км` : 'Рядом';
     $('#geoBtns').innerHTML = `${T.nearby ? '<button class="btn" id="setpt">Поставить точку на карте</button>' : ''}
       ${T.nearby && empty && T.center && T.radius < 15 ? '<button class="btn" id="wider">Расширить до 15 км</button>' : ''}
       ${T.nearby && empty && T.center ? '<button class="btn" id="off">Выключить поиск рядом</button>' : ''}`;
-    $('#lever').disabled = T.spinning || empty || (T.nearby && !T.center);
-    if (empty && (!T.nearby || T.center)) $('#out').innerHTML = `<div class="notice">${T.nearby ? 'Рядом нет мест на 2–3 звезды.' : 'Пока нет мест на 2–3 звезды. Оцените что-нибудь!'}</div>`;
-    else if ($('#out .notice')) $('#out').innerHTML = '';
+    const blocked = T.spinning || empty || (T.nearby && !T.center);
+    knob.disabled = blocked; handle.setAttribute('aria-disabled', String(blocked));
+    if (!T.spinning) {
+      if (empty && (!T.nearby || T.center)) $('#out').innerHTML = `<div class="notice">${ico('warn')}<span>${T.nearby ? 'Рядом нет мест на 2–3 звезды.' : 'Пока нет мест на 2–3 звезды. Оцените что-нибудь!'}</span></div>`;
+      else if ($('#out .notice')) $('#out').innerHTML = '';
+    }
     const b = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
     b('#setpt', () => { T.manual = true; $('#pickwrap').classList.remove('hidden'); mountPicker('pickmap', T.center, (c) => { T.center = c; T.geo = 'done'; paintStatus(); }); });
     b('#wider', () => { T.radius = 15; paintStatus(); });
@@ -440,7 +479,7 @@ function viewSlot() {
   };
   const locate = () => {
     if (!T.nearby || T.center) return;
-    if (!navigator.geolocation) { T.geo = 'failed'; T.nearby = false; paintStatus(); return; }
+    if (!navigator.geolocation) { T.geo = 'failed'; T.nearby = false; $('#nb').checked = false; paintStatus(); return; }
     T.geo = 'asking'; paintStatus();
     navigator.geolocation.getCurrentPosition(
       (p) => { T.center = { lat: p.coords.latitude, lon: p.coords.longitude }; T.geo = 'done'; T.manual = false; paintStatus(); },
@@ -456,34 +495,80 @@ function viewSlot() {
   $('#rig').onchange = (e) => { T.rig = e.target.checked; ls.set('gas_rig', T.rig ? '1' : '0'); };
   paintStatus(); locate();
 
-  $('#lever').onclick = () => {
-    const p = pool(); if (!p.length || T.spinning) return;
-    T.spinning = true; $('#lever').disabled = true; $('#out').innerHTML = '';
-    const lever = $('#lever'); lever.classList.add('pulled'); setTimeout(() => lever.classList.remove('pulled'), 220);
+  // ---- ручка: тянется пальцем вправо или нажимается ----
+  let drag = null;
+  knob.addEventListener('pointerdown', (e) => {
+    if (knob.disabled) return;
+    hint?.kill(); if (G()) G().set(knob, { x: 0 });
+    drag = { x0: e.clientX, dx: 0, moved: false }; knob.setPointerCapture(e.pointerId);
+  });
+  knob.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    drag.dx = Math.max(0, Math.min(maxX(), e.clientX - drag.x0));
+    if (drag.dx > 6) drag.moved = true;
+    if (G()) G().set(knob, { x: drag.dx });
+  });
+  const release = () => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (!d.moved || d.dx > maxX() * 0.6) pull();
+    else if (G()) G().to(knob, { x: 0, duration: 0.5, ease: 'elastic.out(1,0.5)' });
+  };
+  knob.addEventListener('pointerup', release);
+  knob.addEventListener('pointercancel', () => { drag = null; if (G()) G().to(knob, { x: 0, duration: 0.3 }); });
+  knob.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pull(); } });
+
+  function pull() {
+    const p = pool(); if (!p.length || T.spinning || (T.nearby && !T.center)) return;
+    T.spinning = true; knob.disabled = true; $('#out').innerHTML = ''; hint?.kill();
     const win = T.rig ? pickWeighted(p, slotWeights(p, { center: T.nearby ? T.center : null })) : p[Math.floor(Math.random() * p.length)];
     const names = p.map((s) => s.place.name);
-    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let done = 0;
+    const any = () => names[Math.floor(Math.random() * names.length)];
+    const still = calm();
+    const done = [];
     [0, 1, 2].forEach((i) => {
-      const n = 14 + i * 5;
-      const seq = Array.from({ length: n }, () => names[Math.floor(Math.random() * names.length)]); seq.push(win.place.name);
+      const n = 14 + i * 6;
+      const seq = ['', 'GAS'[i], '', ...Array.from({ length: n }, any), any(), win.place.name, any()];
       const strip = $(`#reel${i} .strip`);
-      strip.innerHTML = seq.map((x) => `<div class="cell">${esc(x)}</div>`).join('');
-      const end = `translateY(-${(seq.length - 1) * CELL}px)`;
-      const finish = () => { strip.style.transform = end; if (++done === 3) reveal(win); };
-      if (reduce) return finish();
-      strip.animate([{ transform: 'translateY(0)' }, { transform: end }], { duration: 1500 + i * 600, easing: 'cubic-bezier(.12,.7,.2,1)', fill: 'forwards' }).onfinish = finish;
+      strip.innerHTML = seq.map((x, k) => `<div class="cell${k === 1 ? ' idle' : ''}${k === seq.length - 2 ? ' last' : ''}">${esc(x)}</div>`).join('');
+      const endY = -(seq.length - 3) * ROW;
+      const land = () => { strip.style.transform = `translateY(${endY}px)`; strip.querySelector('.last').classList.add('hit'); if (done.push(i) === 3) reveal(win); };
+      if (still) return land();
+      const dur = 1.7 + i * 0.55;
+      G().set(strip, { y: 0 });
+      G().to($(`#reel${i}`), { filter: 'blur(2.5px)', duration: 0.3, delay: 0.3 });
+      G().to($(`#reel${i}`), { filter: 'blur(0px)', duration: 0.45, delay: 0.3 + dur - 0.7 });
+      G().to(strip, { y: endY, duration: dur, delay: 0.3, ease: 'back.out(0.55)', onComplete: land });
     });
-  };
+    if (!still) {
+      const x = maxX();
+      G().to(knob, { x, duration: 0.2, ease: 'power2.in' });
+      G().to(knob, { x: 0, duration: 0.7, delay: 0.3, ease: 'elastic.out(1,0.55)' });
+    }
+  }
+
   function reveal(win) {
     T.spinning = false;
     const km = T.center ? distanceKm(T.center.lat, T.center.lon, win.place.lat, win.place.lon) : null;
-    $('#out').innerHTML = `<div class="card result"><div class="row"><b class="grow">${esc(win.place.name)}</b>${stars(win.stars)}</div>
-      <div class="meta muted small">${esc(win.place.address)}${km != null ? ` · ${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''}</div>
-      ${scoresHtml(win.scores)}
-      <div class="row wrap" style="margin-top:12px"><a class="btn accent" style="display:inline-flex;align-items:center;text-decoration:none" href="${esc(mapsLink(win.place.lat, win.place.lon, win.place.name, ios))}">Открыть в картах</a>
-      <button class="btn" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div></div>`;
+    $('#out').innerHTML = `<div class="result"><div class="row" style="align-items:flex-start;gap:12px"><div class="grow"><h3>${esc(win.place.name)}</h3>
+      <div class="muted small" style="margin-top:6px">${esc(win.place.address)}${km != null ? ` · ${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''}</div></div>
+      <div class="big b${win.stars}">${win.stars}<small>/3</small></div></div>
+      ${barsHtml(win.scores, ['taste', 'service', 'toilet'])}
+      <div class="row"><a class="btn accent" style="flex:1.3" href="${esc(mapsLink(win.place.lat, win.place.lon, win.place.name, ios))}">Открыть в картах</a>
+      <button class="btn" style="flex:1" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div></div>`;
     paintStatus();
+    if (calm()) return;
+    const g = G();
+    g.fromTo('.reel .cell.hit', { scale: 0.8 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
+    g.fromTo('#machine', { boxShadow: '0 0 0 0 rgba(200,242,90,0)' }, { boxShadow: '0 0 36px 2px rgba(200,242,90,.35)', duration: 0.4, yoyo: true, repeat: 1 });
+    const machine = $('#machine'); const colors = ['#C8F25A', '#8F82FF', '#FFB86B'];
+    for (let k = 0; k < 18; k++) {
+      const el = Object.assign(document.createElement('i'), { className: 'fx' }); el.style.background = colors[k % 3];
+      el.style.left = `${machine.clientWidth / 2}px`; el.style.top = '78px'; machine.appendChild(el);
+      g.fromTo(el, { x: 0, y: 0, scale: 1, rotation: 0, autoAlpha: 1 }, { x: rnd(-150, 150), y: rnd(-80, 70), rotation: rnd(-200, 200), scale: 0, duration: 0.9, ease: 'power2.out', onComplete: () => el.remove() });
+    }
+    g.from('.result', { y: 24, autoAlpha: 0, duration: 0.5, ease: 'power3.out' });
+    g.from('.result .seg5 i.on', { scaleX: 0, transformOrigin: 'left center', duration: 0.4, stagger: 0.04, delay: 0.2 });
   }
 }
 

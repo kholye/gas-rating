@@ -129,3 +129,14 @@ export function pickWeighted(items, weights, rnd = Math.random) {
   for (let i = 0; i < items.length; i++) { x -= weights[i]; if (x < 0) return items[i]; }
   return items[items.length - 1];
 }
+
+// «2 дн.», «1 нед.», «3 мес.»: давность рецензии для постов.
+export function ago(iso, now = Date.now()) {
+  const t = Date.parse(iso); if (!t) return '';
+  const d = Math.floor((now - t) / 864e5);
+  if (d < 1) return 'сегодня';
+  if (d < 7) return `${d} дн.`;
+  if (d < 30) return `${Math.floor(d / 7)} нед.`;
+  if (d < 365) return `${Math.floor(d / 30)} мес.`;
+  return `${Math.floor(d / 365)} г.`;
+}
