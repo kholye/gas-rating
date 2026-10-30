@@ -1,9 +1,9 @@
 import {
   SCALES, summarize, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel,
 } from './logic.js';
 import { makeApi, isDemo, ApiError } from './api.js';
-import { avatarSvg, kingSvg, reviewAvatar, randomSeed } from './avatar.js';
+import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
 
 const $app = document.getElementById('app');
 const ls = {
@@ -18,8 +18,10 @@ const SPB = [59.9386, 30.3141];
 // Код профиля: случайный, живёт в этом браузере; по нему сервер узнаёт «мои» рецензии (имя при этом не нужно).
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
 const loadAuthor = () => { let a = ls.get('gas_author'); if (!isUuid(a)) { a = newId(); ls.set('gas_author', a); } return a; };
-const loadSeed = () => { let n = Number(ls.get('gas_avatar')); if (!Number.isInteger(n) || n < 0 || n > 4294967295 || ls.get('gas_avatar') == null) { n = randomSeed(); ls.set('gas_avatar', String(n)); } return n; };
-const S = { code: null, seed: loadSeed(), author: loadAuthor(), name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', data: null, sums: [], gate: null, err: null, map: null };
+const AUTHOR = loadAuthor();
+// Зерно аватарки: выбранное кубиком (из базы или с этого телефона), иначе вычисленное из кода профиля.
+const loadSeed = () => { const raw = ls.get('gas_avatar'); const n = Number(raw); return raw && Number.isInteger(n) && n >= 0 && n <= 4294967295 ? n : authorSeed(AUTHOR); };
+const S = { code: null, seed: loadSeed(), author: AUTHOR, name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', data: null, sums: [], gate: null, err: null, map: null };
 
 // ---------- секретный код: из #k=… в адресе, затем адрес очищается ----------
 {
@@ -48,11 +50,13 @@ const ICON = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   warn: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
 };
 const ico = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 const themeIcon = () => ico({ light: 'sun', dark: 'moon' }[ls.get('gas_theme')] ?? 'auto');
 
 // ---------- общие куски разметки ----------
+const scoreClass = (x) => (x == null ? '' : x >= 6.5 ? 'b2' : x >= 5 ? 'b1' : 'b0');
 const stars = (n) => (n == null ? '<span class="badge">—</span>' : `<span class="badge b${n}" aria-label="${n} из 3">${n}/3</span>`);
 const bar = (title, back = true) => `<header class="bar">${back ? `<button class="icon-btn" data-act="back" aria-label="Назад">${ico('back')}</button>` : ''}<h1>${esc(title)}</h1><button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>`;
 const SHORT = { access: 'Доступ', taste: 'Вкус', service: 'Сервис', clean: 'Чистота', toilet: 'Туалет', impression: 'Впечатл.' };
@@ -71,10 +75,13 @@ const postHtml = (r, last) => `<article class="post"><div class="side"><span cla
 // ---------- данные ----------
 function build(data) {
   S.data = data;
+  const mine = data.reviews.find((r) => r.mine && r.avatar_seed != null); // сервер хранит зерно автора: на любом телефоне аватар один
+  if (mine) { S.seed = mine.avatar_seed; ls.set('gas_avatar', String(mine.avatar_seed)); }
   const by = new Map();
   data.reviews.forEach((r) => { if (!by.has(r.place_id)) by.set(r.place_id, []); by.get(r.place_id).push(r); });
   S.role = data.role || 'user';
-  S.sums = data.places.map((p) => summarize(p, by.get(p.id) || [], 0));
+  const model = ratingModel(data.reviews); // общий средний балл и поправка на строгость авторов
+  S.sums = data.places.map((p) => summarize(p, by.get(p.id) || [], model));
 }
 async function refresh() {
   if (!isDemo && !S.code) { S.gate = 'none'; return false; }
@@ -153,7 +160,7 @@ function viewGate() {
 function viewMenu() {
   const rated = S.sums.filter((s) => s.count).length;
   const dots = [10, 30, 50, 70, 90, 110, 130].flatMap((x, i) => [8, 24, 40].map((y, j) => ((i + j) % 3 === 1 || (x === 70 && y === 24) || (x === 110 && y === 24) ? '' : `<circle cx="${x}" cy="${y}" r="2"/>`))).join('');
-  $app.innerHTML = `<header class="bar mehead"><button class="me-tile" data-act="go" data-view="me" aria-label="Открыть профиль">${S.role === 'admin' ? kingSvg({ size: 52, animate: true, label: 'Ваш аватар' }) : avatarSvg(S.seed, { size: 52, animate: true, label: 'Ваш аватар' })}</button>
+  $app.innerHTML = `<header class="bar mehead"><button class="me-tile" data-act="go" data-view="me" aria-label="Открыть профиль">${avatarSvg(S.seed, { size: 52, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg() : ''}</button>
       <div class="grow"><div class="mename">${esc(S.role === 'admin' ? (S.name || 'Админ') : S.name && !S.anon ? S.name : 'Аноним')}</div><div class="label" style="font-size:11px;margin-top:2px">${S.role === 'admin' ? 'админ' : 'участник'} · профиль</div></div>
       <button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
     ${isDemo ? `<div class="notice">${ico('warn')}<span>Демо-режим: выдуманные примеры. Настоящая база подключается в <code>config.js</code>.</span></div>` : ''}
@@ -178,9 +185,9 @@ function downloadBackup() {
 // ---------- профиль: имя, код профиля, ключ доступа ----------
 function viewMe() {
   $app.innerHTML = `${bar('Профиль')}
-    <div class="card" style="display:flex;align-items:center;gap:16px"><span class="me-tile" style="width:96px;height:96px;border-radius:30px;flex:none">${S.role === 'admin' ? kingSvg({ size: 84, animate: true, label: 'Ваш аватар' }) : avatarSvg(S.seed, { size: 84, animate: true, label: 'Ваш аватар' })}</span>
-      <div class="grow"><div class="label">Аватар</div><p class="small muted" style="margin:6px 0 10px">${S.role === 'admin' ? 'Вы админ, у вас особый аватар: корона видна всем в ваших рецензиях (кроме анонимных).' : 'Он выпал случайно и показывается у ваших рецензий. Если не нравится, перебросьте кубик.'}</p>
-      ${S.role === 'admin' ? '' : '<button class="btn" id="reroll">Перебросить кубик</button>'}</div></div>
+    <div class="card" style="display:flex;align-items:center;gap:16px"><span class="me-tile" style="width:96px;height:96px;border-radius:30px;flex:none">${avatarSvg(S.seed, { size: 84, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg({ size: 30 }) : ''}</span>
+      <div class="grow"><div class="label">Аватар</div><p class="small muted" style="margin:6px 0 10px">${S.role === 'admin' ? 'Корона на аватаре видна только вам: в рецензиях вы выглядите как все. ' : ''}Аватар выпал по вашему коду профиля и показывается у ваших именных рецензий. Если не нравится, перебросьте кубик. У анонимных рецензий общий безликий аватар.</p>
+      <button class="btn" id="reroll">Перебросить кубик</button></div></div>
     <div class="card"><div class="label">Доступ</div>
       <p style="margin:8px 0 0">${S.role === 'admin' ? 'Вы вошли как <b>админ</b>: можно править места, удалять любые рецензии и фото.' : 'Вы вошли как <b>участник</b>: можно добавлять места, оценки и фото, править и удалять только своё.'}</p>
       <label class="lbl" for="newkey">Сменить ключ доступа (ссылка или код)</label>
@@ -210,7 +217,7 @@ function viewMe() {
   $('#setcode').onclick = async () => {
     const c = $('#othercode').value.trim().toLowerCase();
     if (!isUuid(c)) { msg.style.color = ''; msg.textContent = 'Это не похоже на код профиля.'; return; }
-    S.author = c; ls.set('gas_author', c); await refresh(); render();
+    S.author = c; ls.set('gas_author', c); ls.set('gas_avatar', ''); S.seed = authorSeed(c); await refresh(); render();
   };
   $('#setkey').onclick = async () => {
     const code = parsePastedLink($('#newkey').value); if (!code) return;
@@ -240,12 +247,12 @@ function viewEditPlace() {
 }
 
 // ---------- список ----------
-const LST = { q: '', sort: 'stars', min: '0' };
+const LST = { q: '', sort: 'score', min: '0' };
 function viewList() {
   $app.innerHTML = `${bar('Все оценённые')}
     <input type="search" id="q" placeholder="Поиск по названию или адресу" value="${esc(LST.q)}">
     <div class="row" style="margin:8px 0 12px"><select id="sort" aria-label="Сортировка">
-      ${[['stars', 'Сначала по звёздам'], ['taste', 'По вкусу'], ['name', 'По названию'], ['new', 'Сначала новые']].map(([v, n]) => `<option value="${v}" ${LST.sort === v ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      ${[['score', 'Сначала лучшие'], ['stars', 'По звёздам'], ['taste', 'По вкусу'], ['name', 'По названию'], ['new', 'Сначала новые']].map(([v, n]) => `<option value="${v}" ${LST.sort === v ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <select id="min" aria-label="Минимум звёзд">${[['0', 'Любые'], ['1', '1+ звезда'], ['2', '2+ звезды'], ['3', '3 звезды']].map(([v, n]) => `<option value="${v}" ${LST.min === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
     <div id="items"></div>`;
   const paint = () => {
@@ -254,7 +261,7 @@ function viewList() {
     $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
-      <div class="chips"><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${disagreement(s.reviews) ? '<span class="chip warn">разногласие</span>' : ''}</div></button>`).join('')
+      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`).join('')
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
   };
   $app.querySelector('#q').oninput = (e) => { LST.q = e.target.value; paint(); };
@@ -272,9 +279,10 @@ function viewDetail() {
   const vs = s.reviews.map((r) => r.verdict);
   $app.innerHTML = `${bar('')}
     <div class="ph-head"><div class="grow"><div class="label">${esc(p.kind || 'место')}</div><h1>${esc(p.name)}</h1><div class="muted small" style="margin-top:8px">${esc(p.address)}</div></div>
-      ${s.stars == null ? '' : `<div class="big b${s.stars}">${s.stars}<small>/3</small></div>`}</div>
+      ${s.score == null ? '' : `<div style="text-align:right;flex:none"><div class="big ${scoreClass(s.score)}">${fmt(s.score)}<small>/10</small></div><div style="margin-top:6px">${stars(s.stars)}</div></div>`}</div>
     ${s.count ? barsHtml(s.scores) : '<p class="muted">Пока нет рецензий.</p>'}
-    ${d ? `<div class="notice">${ico('warn')}<span>Мнения расходятся${d.verdict ? `: вердикты от ${Math.min(...vs)} до ${Math.max(...vs)} звёзд` : ''}${d.scales.length ? `${d.verdict ? '; ' : ': '}сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : ''}
+    <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: половина — качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота, меньше всего доступность и туалет), половина — звёзды. Строгость авторов слегка выравнивается, а к каждому месту подмешивается немного среднего по группе, чтобы одна рецензия не решала всё. Звёзды места — медиана вердиктов.</p></details>
+    ${d?.kind === 'quality' ? `<div class="notice">${ico('warn')}<span>Мнения о качестве расходятся${d.scales.length ? `: сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : d?.kind === 'trip' ? `<div class="notice soft">${ico('info')}<span>Качество оценили похоже, но по-разному решили, стоит ли ехать специально (вердикты от ${Math.min(...vs)} до ${Math.max(...vs)}). Это не спор: у каждого своя мера «поехать специально».</span></div>` : ''}
     <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
       <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою' : 'Оценить'}</button></div>
     ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
@@ -345,7 +353,7 @@ function viewMap() {
   S.sums.forEach((s) => {
     const icon = L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pin"><span>${s.stars ?? '?'}</span></div>` });
     const box = document.createElement('div');
-    box.innerHTML = `<b>${esc(s.place.name)}</b><br>${stars(s.stars)}<br><span class="small">вкус ${fmt(s.scores.taste)} · оценок ${s.count}</span><br><a href="#">Подробнее</a>`;
+    box.innerHTML = `<b>${esc(s.place.name)}</b><br>${stars(s.stars)} · итог ${fmt(s.score)}<br><span class="small">вкус ${fmt(s.scores.taste)} · оценок ${s.count}</span><br><a href="#">Подробнее</a>`;
     box.querySelector('a').onclick = (e) => { e.preventDefault(); go('detail', { id: s.place.id }); };
     L.marker([s.place.lat, s.place.lon], { icon }).addTo(S.map).bindPopup(box);
     pts.push([s.place.lat, s.place.lon]);
@@ -484,7 +492,7 @@ function viewRate() {
       let id = R.placeId;
       if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind.trim(), address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
       await api.saveReview({
-        place_id: id, name: R.name.trim(), anon: R.anon, avatar_seed: S.seed, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
+        place_id: id, name: R.name.trim(), anon: R.anon, avatar_seed: R.anon ? null : S.seed, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
         toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
       });
       let failed = 0;
@@ -511,7 +519,7 @@ function viewSlot() {
   const pool = () => slotPool(S.sums, { nearby: T.nearby, center: T.center, radiusKm: T.radius });
   const status = () => {
     if (!T.nearby && T.geo === 'failed') return 'Геолокация недоступна, поэтому поиск рядом выключен. Включите «Рядом» и поставьте точку на карте.';
-    if (!T.nearby) return 'Поиск по радиусу выключен: берём любое место на 2–3 звезды.';
+    if (!T.nearby) return 'Поиск по радиусу выключен: берём любое место с высоким итоговым баллом.';
     if (T.geo === 'asking') return 'Определяю, где вы…';
     if (!T.center) return 'Не знаю, где вы. Поставьте точку на карте или выключите «Рядом».';
     return `Ищу в радиусе ${T.radius} км от ${T.manual ? 'выбранной точки' : 'вас'}.`;
@@ -542,7 +550,7 @@ function viewSlot() {
     const blocked = T.spinning || empty || (T.nearby && !T.center);
     knob.disabled = blocked; handle.setAttribute('aria-disabled', String(blocked));
     if (!T.spinning) {
-      if (empty && (!T.nearby || T.center)) $('#out').innerHTML = `<div class="notice">${ico('warn')}<span>${T.nearby ? 'Рядом нет мест на 2–3 звезды.' : 'Пока нет мест на 2–3 звезды. Оцените что-нибудь!'}</span></div>`;
+      if (empty && (!T.nearby || T.center)) $('#out').innerHTML = `<div class="notice">${ico('warn')}<span>${T.nearby ? 'Рядом нет подходящих мест.' : 'Пока нет мест с высоким итоговым баллом. Оцените что-нибудь!'}</span></div>`;
       else if ($('#out .notice')) $('#out').innerHTML = '';
     }
     const b = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
@@ -626,7 +634,7 @@ function viewSlot() {
     const km = T.center ? distanceKm(T.center.lat, T.center.lon, win.place.lat, win.place.lon) : null;
     $('#out').innerHTML = `<div class="result"><div class="row" style="align-items:flex-start;gap:12px"><div class="grow"><h3>${esc(win.place.name)}</h3>
       <div class="muted small" style="margin-top:6px">${esc(win.place.address)}${km != null ? ` · ${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''}</div></div>
-      <div class="big b${win.stars}">${win.stars}<small>/3</small></div></div>
+      <div class="big ${scoreClass(win.score)}">${fmt(win.score)}<small>/10</small></div></div>
       ${barsHtml(win.scores, ['taste', 'service', 'toilet'])}
       <div class="row"><a class="btn accent" style="flex:1.3" href="${esc(mapsLink(win.place.lat, win.place.lon, win.place.name, ios))}">Открыть в картах</a>
       <button class="btn" style="flex:1" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div></div>`;

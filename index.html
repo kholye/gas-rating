@@ -102,6 +102,11 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .btn[disabled]{opacity:.5;cursor:default}
 .notice{border-radius:16px;padding:12px 14px;border:1px solid var(--vio);background:var(--vio-soft);font-size:14px;margin:12px 0;display:flex;gap:10px;align-items:flex-start}
 .notice svg.i{width:18px;height:18px;flex:none;margin-top:2px;color:var(--vio)}
+.notice.soft{border-color:var(--ln2);background:var(--s1)}
+.notice.soft svg.i{color:var(--mut)}
+.how{margin-top:12px;font-size:13px;color:var(--mut)}
+.how summary{cursor:pointer;padding:6px 0}
+.how p{margin:4px 0 0;line-height:1.5}
 .err{color:var(--bad);font-size:14px;margin-top:8px}
 
 /* значок звёзд: 3/3 */
@@ -160,8 +165,9 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 
 /* аватарки */
 .av-tile{width:46px;height:46px;border-radius:16px;background:var(--s1);border:1px solid var(--ln);display:flex;align-items:center;justify-content:center;flex:none}
-.me-tile{width:60px;height:60px;flex:none;border-radius:20px;border:1px solid var(--ln2);background:var(--s1);display:flex;align-items:center;justify-content:center;padding:0;overflow:visible}
+.me-tile{position:relative;width:60px;height:60px;flex:none;border-radius:20px;border:1px solid var(--ln2);background:var(--s1);display:flex;align-items:center;justify-content:center;padding:0;overflow:visible}
 header.mehead{padding-top:14px}
+.me-tile .crown{position:absolute;top:-9px;right:-7px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
 .mename{font-weight:700;font-size:17px;letter-spacing:-.01em;overflow-wrap:anywhere}
 @keyframes av-blink{0%,90%,100%{transform:scaleY(1)}94%{transform:scaleY(.08)}}
 @keyframes av-look{0%,40%,100%{transform:translateX(0)}50%,60%{transform:translateX(2.2px)}70%,80%{transform:translateX(-2.2px)}}
