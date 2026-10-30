@@ -18,6 +18,8 @@ jobs:
           GAS_CODE: ${{ secrets.GAS_CODE }}
         run: |
           set -euo pipefail
+          for v in SUPABASE_URL SUPABASE_ANON_KEY GAS_CODE; do [ -n "${!v}" ] || { echo "Секрет $v пустой или не создан"; exit 1; }; done
+          SUPABASE_URL="${SUPABASE_URL%/}"; GAS_CODE="$(printf %s "$GAS_CODE" | tr -d '[:space:]')"; SUPABASE_ANON_KEY="$(printf %s "$SUPABASE_ANON_KEY" | tr -d '[:space:]')"
           echo "::add-mask::$GAS_CODE"
           auth=()
           case "$SUPABASE_ANON_KEY" in sb_*) ;; *) auth=(-H "Authorization: Bearer $SUPABASE_ANON_KEY") ;; esac
