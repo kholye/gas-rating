@@ -1,5 +1,5 @@
 # Будильник: раз в ~3 дня читает настоящие данные из базы, чтобы бесплатный Supabase не засыпал.
-# Успех = HTTP 200 и в ответе есть список участников. Иначе задача падает, и GitHub присылает письмо.
+# Успех = HTTP 200 и в ответе есть роль (значит, ключ принят и база читает данные). Иначе задача падает, и GitHub присылает письмо.
 name: keepalive
 
 on:
@@ -27,5 +27,5 @@ jobs:
             -H "apikey: $SUPABASE_ANON_KEY" "${auth[@]}" -H 'Content-Type: application/json' \
             -d "$(jq -nc --arg c "$GAS_CODE" '{p_code:$c}')")
           if [ "$code" != "200" ]; then echo "База ответила HTTP $code (код устарел? проект спит?)"; exit 1; fi
-          jq -e '(.members | length) > 0' body.json > /dev/null || { echo "Ответ пустой: нет участников"; exit 1; }
+          jq -e '.role == "user" or .role == "admin"' body.json > /dev/null || { echo "Ответ без роли: база ответила не так, как ожидалось"; exit 1; }
           echo "База отвечает: мест $(jq '.places | length' body.json), рецензий $(jq '.reviews | length' body.json)"
