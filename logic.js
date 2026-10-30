@@ -140,3 +140,9 @@ export function ago(iso, now = Date.now()) {
   if (d < 365) return `${Math.floor(d / 30)} мес.`;
   return `${Math.floor(d / 365)} г.`;
 }
+
+// Имя автора для поста: анонимная рецензия хранится без имени.
+export const displayName = (r) => r.author_name || 'Аноним';
+
+// Код профиля — обычный uuid (его можно перенести на другой телефон).
+export const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || '').trim());

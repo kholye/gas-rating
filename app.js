@@ -1,6 +1,6 @@
 import {
   SCALES, summarize, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid,
 } from './logic.js';
 import { makeApi, isDemo, ApiError } from './api.js';
 
@@ -14,7 +14,10 @@ const fmt = (x) => (x == null ? '—' : x.toFixed(1).replace('.', ','));
 const ios = /iPad|iPhone|iPod/.test(navigator.userAgent);
 const SPB = [59.9386, 30.3141];
 
-const S = { code: null, me: ls.get('gas_me'), data: null, sums: [], gate: null, err: null, map: null };
+// Код профиля: случайный, живёт в этом браузере; по нему сервер узнаёт «мои» рецензии (имя при этом не нужно).
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
+const loadAuthor = () => { let a = ls.get('gas_author'); if (!isUuid(a)) { a = newId(); ls.set('gas_author', a); } return a; };
+const S = { code: null, author: loadAuthor(), name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', data: null, sums: [], gate: null, err: null, map: null };
 
 // ---------- секретный код: из #k=… в адресе, затем адрес очищается ----------
 {
@@ -22,7 +25,7 @@ const S = { code: null, me: ls.get('gas_me'), data: null, sums: [], gate: null, 
   S.code = code;
   if (fromUrl) { ls.set('gas_code', code); history.replaceState(null, '', location.pathname + location.search); }
 }
-const api = makeApi(() => S.code);
+const api = makeApi(() => S.code, () => S.author);
 
 // ---------- тема ----------
 const applyTheme = () => {
@@ -56,20 +59,21 @@ const barsHtml = (sc, keys = SCALES.map(([k]) => k)) => `<div class="bars">${key
   const v = sc[k]; const on = v == null ? 0 : Math.round(v);
   return `<span>${SHORT[k].toUpperCase()}</span><span class="seg5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= on ? 'on' : ''}"></i>`).join('')}</span><b>${fmt(v)}</b>`;
 }).join('')}</div>`;
-const avClass = (name) => `av${Math.max(0, S.data.members.indexOf(name)) % 4}`;
+const avClass = (r) => { if (!r.author_name) return 'av4'; let h = 0; for (const c of r.author_name) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `av${h % 4}`; };
 const toiletStat = (r) => (r.toilet_present === true && r.toilet != null ? `Туалет ${r.toilet}` : r.toilet_present === false ? 'Туалета нет' : '');
 // Рецензия как пост: аватар с линией «ветки», имя, давность, вердикт, текст, фото, показатели.
-const postHtml = (r, last) => `<article class="post"><div class="side"><span class="avatar ${avClass(r.reviewer)}" aria-hidden="true">${esc(r.reviewer.slice(0, 1).toUpperCase())}</span>${last ? '' : '<span class="line"></span>'}</div>
-  <div class="main"><div class="hd"><b>${esc(r.reviewer)}</b><span class="ago">· ${esc(ago(r.updated_at || r.created_at))}</span>${stars(r.verdict)}</div>
-  ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}<div class="thumbs" data-who="${esc(r.reviewer)}"></div>
-  <div class="stats"><span>Вкус ${r.taste}</span><span>Сервис ${r.service}</span><span>Чистота ${r.clean}</span>${toiletStat(r) ? `<span>${toiletStat(r)}</span>` : ''}<span>Доступ ${r.access}</span><span>Впечатл. ${r.impression}</span></div></div></article>`;
+const postHtml = (r, last) => `<article class="post"><div class="side"><span class="avatar ${avClass(r)}" aria-hidden="true">${esc(r.author_name ? r.author_name.slice(0, 1).toUpperCase() : '?')}</span>${last ? '' : '<span class="line"></span>'}</div>
+  <div class="main"><div class="hd"><b>${esc(displayName(r))}</b>${r.mine ? '<span class="ago">· вы</span>' : ''}<span class="ago">· ${esc(ago(r.updated_at || r.created_at))}</span>${stars(r.verdict)}</div>
+  ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}<div class="thumbs" data-rid="${r.id}"></div>
+  <div class="stats"><span>Вкус ${r.taste}</span><span>Сервис ${r.service}</span><span>Чистота ${r.clean}</span>${toiletStat(r) ? `<span>${toiletStat(r)}</span>` : ''}<span>Доступ ${r.access}</span><span>Впечатл. ${r.impression}</span></div>${S.role === 'admin' ? `<div style="margin-top:10px"><button class="btn danger" style="min-height:34px;padding:0 12px;font-size:13px" data-del="${r.id}">Удалить (админ)</button></div>` : ''}</div></article>`;
 
 // ---------- данные ----------
 function build(data) {
   S.data = data;
   const by = new Map();
   data.reviews.forEach((r) => { if (!by.has(r.place_id)) by.set(r.place_id, []); by.get(r.place_id).push(r); });
-  S.sums = data.places.map((p) => summarize(p, by.get(p.id) || [], data.members.length));
+  S.role = data.role || 'user';
+  S.sums = data.places.map((p) => summarize(p, by.get(p.id) || [], 0));
 }
 async function refresh() {
   if (!isDemo && !S.code) { S.gate = 'none'; return false; }
@@ -107,7 +111,7 @@ async function guard(fn, msgEl) {
   catch (e) {
     if (!(e instanceof ApiError)) { console.error(e); if (msgEl) msgEl.textContent = 'Что-то пошло не так. Попробуйте ещё раз.'; return; }
     if (e.kind === 'bad_code') { S.gate = 'bad'; render(); }
-    else if (msgEl) msgEl.textContent = e.kind === 'offline' ? 'Нет связи с базой. Проверьте интернет и повторите.' : e.kind === 'db' ? 'База не отвечает (возможно, «спит»). Повторите через минуту.' : `Не удалось сохранить: ${e.detail || 'отказ базы'}`;
+    else if (msgEl) msgEl.textContent = e.kind === 'forbidden' ? 'Это может сделать только автор или админ.' : e.kind === 'offline' ? 'Нет связи с базой. Проверьте интернет и повторите.' : e.kind === 'db' ? 'База не отвечает (возможно, «спит»). Повторите через минуту.' : `Не удалось сохранить: ${e.detail || 'отказ базы'}`;
     else { S.err = e; render(); }
   }
 }
@@ -119,7 +123,7 @@ function render() {
   if (S.gate) return viewGate();
   if (S.err) return viewError();
   if (!S.data) return viewLoading();
-  ({ menu: viewMenu, list: viewList, detail: viewDetail, map: viewMap, slot: viewSlot, rate: viewRate }[cur.view] || viewMenu)();
+  ({ menu: viewMenu, list: viewList, detail: viewDetail, map: viewMap, slot: viewSlot, rate: viewRate, me: viewMe, editplace: viewEditPlace }[cur.view] || viewMenu)();
 }
 const viewLoading = () => { $app.innerHTML = `${bar('G.A.S. Rating', false)}<p class="muted">Загружаю…</p>`; };
 
@@ -147,7 +151,6 @@ function viewGate() {
 
 function viewMenu() {
   const rated = S.sums.filter((s) => s.count).length;
-  const me = S.me && S.data.members.includes(S.me) ? S.me : '';
   const dots = [10, 30, 50, 70, 90, 110, 130].flatMap((x, i) => [8, 24, 40].map((y, j) => ((i + j) % 3 === 1 || (x === 70 && y === 24) || (x === 110 && y === 24) ? '' : `<circle cx="${x}" cy="${y}" r="2"/>`))).join('');
   $app.innerHTML = `<header class="bar"><span class="brand">G.A.S. / РЕЙТИНГ</span><span class="grow"></span><button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
     ${isDemo ? `<div class="notice">${ico('warn')}<span>Демо-режим: выдуманные примеры. Настоящая база подключается в <code>config.js</code>.</span></div>` : ''}
@@ -160,14 +163,68 @@ function viewMenu() {
         <span class="ttl">Карта</span></button>
     </div>
     <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
-    <div class="foot"><span class="dot"></span><span>${isDemo ? 'демо' : 'база на связи'} · вы:</span>
-      <select id="me" aria-label="Кто вы"><option value="">—</option>${S.data.members.map((m) => `<option ${m === me ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
-      <button class="btn" id="backup" style="margin-left:auto;min-height:36px;padding:0 12px;font:12px var(--mono)">копия</button></div>`;
-  $app.querySelector('#me').onchange = (e) => { S.me = e.target.value || null; ls.set('gas_me', S.me || ''); };
-  $app.querySelector('#backup').onclick = () => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(S.data, null, 2)], { type: 'application/json' }));
-    const a = Object.assign(document.createElement('a'), { href: url, download: `gas-rating-${new Date().toISOString().slice(0, 10)}.json` });
-    a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    <div class="foot"><span class="dot"></span><span>${isDemo ? 'демо' : 'база на связи'} · ${S.role === 'admin' ? 'админ' : S.name && !S.anon ? esc(S.name) : 'аноним'}</span>
+      <button class="btn" data-act="go" data-view="me" style="margin-left:auto;min-height:36px;padding:0 12px;font:12px var(--mono)">профиль</button></div>`;
+}
+
+function downloadBackup() {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(S.data, null, 2)], { type: 'application/json' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: `gas-rating-${new Date().toISOString().slice(0, 10)}.json` });
+  a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------- профиль: имя, код профиля, ключ доступа ----------
+function viewMe() {
+  $app.innerHTML = `${bar('Профиль')}
+    <div class="card"><div class="label">Доступ</div>
+      <p style="margin:8px 0 0">${S.role === 'admin' ? 'Вы вошли как <b>админ</b>: можно править места, удалять любые рецензии и фото.' : 'Вы вошли как <b>участник</b>: можно добавлять места, оценки и фото, править и удалять только своё.'}</p>
+      <label class="lbl" for="newkey">Сменить ключ доступа (ссылка или код)</label>
+      <div class="row"><input type="text" id="newkey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…/#k=…"><button class="btn" id="setkey">Войти</button></div></div>
+    <div class="card"><div class="label">Имя в рецензиях</div>
+      <label class="lbl" for="pname">Ваше имя</label><input type="text" id="pname" maxlength="40" value="${esc(S.name)}" placeholder="Как подписывать рецензии">
+      <label class="pill" style="display:inline-block;margin-top:12px"><input type="checkbox" id="panon" ${S.anon ? 'checked' : ''}><span>Анонимно по умолчанию</span></label>
+      <p class="small muted" style="margin:10px 0 0">Анонимно: имя не сохраняется нигде, в постах будет «Аноним». Выбор можно менять в каждой рецензии отдельно.</p></div>
+    <div class="card"><div class="label">Код профиля</div>
+      <p class="small muted" style="margin:8px 0 10px">По нему сайт узнаёт ваши рецензии. Сохраните его, чтобы править свои оценки на другом телефоне. Никому не показывайте.</p>
+      <div class="row"><input type="text" id="mycode" readonly value="${esc(S.author)}" style="font-family:var(--mono);font-size:13px"><button class="btn" id="copycode">Копировать</button></div>
+      <label class="lbl" for="othercode">Ввести код профиля с другого телефона</label>
+      <div class="row"><input type="text" id="othercode" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"><button class="btn" id="setcode">Применить</button></div></div>
+    <div class="err" id="msg"></div>
+    <button class="btn block" id="backup">Скачать копию оценок</button>`;
+  const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
+  $('#pname').oninput = (e) => { S.name = e.target.value; ls.set('gas_name', S.name); };
+  $('#panon').onchange = (e) => { S.anon = e.target.checked; ls.set('gas_anon', S.anon ? '1' : '0'); };
+  $('#backup').onclick = downloadBackup;
+  $('#copycode').onclick = async () => { try { await navigator.clipboard.writeText(S.author); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { $('#mycode').select(); msg.textContent = 'Выделено: скопируйте вручную.'; } };
+  $('#setcode').onclick = async () => {
+    const c = $('#othercode').value.trim().toLowerCase();
+    if (!isUuid(c)) { msg.style.color = ''; msg.textContent = 'Это не похоже на код профиля.'; return; }
+    S.author = c; ls.set('gas_author', c); await refresh(); render();
+  };
+  $('#setkey').onclick = async () => {
+    const code = parsePastedLink($('#newkey').value); if (!code) return;
+    S.code = code; ls.set('gas_code', code); viewLoading(); await refresh(); render();
+  };
+}
+
+// ---------- админ: правка места ----------
+function viewEditPlace() {
+  const s = S.role === 'admin' ? sumById(cur.p.id) : null;
+  if (!s) return go('menu', {}, true);
+  const p = s.place; const draft = { name: p.name, kind: p.kind || '', address: p.address, lat: p.lat, lon: p.lon };
+  $app.innerHTML = `${bar('Изменить место')}<form id="f" autocomplete="off">
+    <label class="lbl" for="en">Название</label><input type="text" id="en" maxlength="120" value="${esc(p.name)}">
+    <label class="lbl" for="ek">Тип</label><input type="text" id="ek" maxlength="40" value="${esc(p.kind || '')}">
+    <label class="lbl" for="ea">Адрес</label><input type="text" id="ea" maxlength="300" value="${esc(p.address)}">
+    <div class="small muted" style="margin-top:8px">Точка на карте: нажмите или перетащите булавку.</div><div id="pickmap"></div>
+    <div class="err" id="msg"></div><button class="btn accent block" id="save" style="margin-top:14px">Сохранить</button></form>`;
+  mountPicker('pickmap', { lat: p.lat, lon: p.lon }, (c) => { draft.lat = c.lat; draft.lon = c.lon; });
+  const msg = $app.querySelector('#msg');
+  $app.querySelector('#save').onclick = (e) => {
+    e.preventDefault();
+    draft.name = $app.querySelector('#en').value.trim(); draft.kind = $app.querySelector('#ek').value.trim(); draft.address = $app.querySelector('#ea').value.trim();
+    if (!draft.name || !draft.address) { msg.textContent = 'Нужны название и адрес.'; return; }
+    guard(async () => { await api.savePlace({ id: p.id, ...draft }); await refresh(); go('detail', { id: p.id }, true); }, msg);
   };
 }
 
@@ -186,7 +243,7 @@ function viewList() {
     $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
-      <div class="chips"><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценили ${s.count} из ${s.memberCount}</span>${disagreement(s.reviews) ? '<span class="chip warn">разногласие</span>' : ''}</div></button>`).join('')
+      <div class="chips"><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${disagreement(s.reviews) ? '<span class="chip warn">разногласие</span>' : ''}</div></button>`).join('')
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
   };
   $app.querySelector('#q').oninput = (e) => { LST.q = e.target.value; paint(); };
@@ -199,7 +256,7 @@ function viewList() {
 function viewDetail() {
   const s = sumById(cur.p.id);
   if (!s) return go('list', {}, true);
-  const p = s.place; const mine = s.reviews.find((r) => r.reviewer === S.me);
+  const p = s.place; const mine = s.reviews.find((r) => r.mine); const admin = S.role === 'admin';
   const d = disagreement(s.reviews);
   const vs = s.reviews.map((r) => r.verdict);
   $app.innerHTML = `${bar('')}
@@ -211,12 +268,13 @@ function viewDetail() {
       <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою' : 'Оценить'}</button></div>
     ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
     <div class="err" id="msg"></div>
-    <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
+    <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${admin ? `<button class="btn" data-act="go" data-view="editplace" data-id="${p.id}">Изменить место</button>` : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
   const msg = $app.querySelector('#msg');
   const del = $app.querySelector('#delrev');
-  if (del) del.onclick = () => confirm('Удалить вашу рецензию?') && guard(async () => { await api.deleteReview(p.id, S.me); await refresh(); go('detail', { id: p.id }, true); }, msg);
+  if (del) del.onclick = () => confirm('Удалить вашу рецензию?') && guard(async () => { await api.deleteReview(mine.id); await refresh(); go('detail', { id: p.id }, true); }, msg);
   const dp = $app.querySelector('#delplace');
   if (dp) dp.onclick = () => confirm('Удалить заведение?') && guard(async () => { await api.deletePlace(p.id); await refresh(); go('list', {}, true); }, msg);
+  $app.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => confirm('Удалить эту рецензию?') && guard(async () => { await api.deleteReview(Number(b.dataset.del)); await refresh(); go('detail', { id: p.id }, true); }, msg); });
   if (s.count) loadPhotos(p.id);
 }
 
@@ -230,12 +288,12 @@ async function loadPhotos(placeId) {
   try { list = await api.getPhotos(placeId); } catch { return; } // без фото страница остаётся рабочей
   if (cur.view !== 'detail' || cur.p.id !== placeId) return;
   for (const ph of list) {
-    const box = [...$app.querySelectorAll('.thumbs[data-who]')].find((b) => b.dataset.who === ph.reviewer); if (!box) continue;
+    const box = [...$app.querySelectorAll('.thumbs[data-rid]')].find((b) => Number(b.dataset.rid) === ph.review_id); if (!box) continue;
     const src = `data:image/jpeg;base64,${ph.data}`;
     const wrap = Object.assign(document.createElement('span'), { className: 'thumb' });
     const img = Object.assign(document.createElement('img'), { src, alt: 'Фото', loading: 'lazy' });
     img.onclick = () => openPhoto(src); wrap.appendChild(img);
-    if (ph.reviewer === S.me) {
+    if (ph.mine || S.role === 'admin') {
       const x = Object.assign(document.createElement('button'), { type: 'button', className: 'x', textContent: '×' });
       x.setAttribute('aria-label', 'Удалить фото');
       x.onclick = () => confirm('Удалить это фото?') && guard(async () => { await api.deletePhoto(ph.id); wrap.remove(); }, $app.querySelector('#msg'));
@@ -276,7 +334,7 @@ function viewMap() {
   S.sums.forEach((s) => {
     const icon = L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pin"><span>${s.stars ?? '?'}</span></div>` });
     const box = document.createElement('div');
-    box.innerHTML = `<b>${esc(s.place.name)}</b><br>${stars(s.stars)}<br><span class="small">вкус ${fmt(s.scores.taste)} · оценили ${s.count} из ${s.memberCount}</span><br><a href="#">Подробнее</a>`;
+    box.innerHTML = `<b>${esc(s.place.name)}</b><br>${stars(s.stars)}<br><span class="small">вкус ${fmt(s.scores.taste)} · оценок ${s.count}</span><br><a href="#">Подробнее</a>`;
     box.querySelector('a').onclick = (e) => { e.preventDefault(); go('detail', { id: s.place.id }); };
     L.marker([s.place.lat, s.place.lon], { icon }).addTo(S.map).bindPopup(box);
     pts.push([s.place.lat, s.place.lon]);
@@ -305,14 +363,15 @@ const SCALE_KEYS = SCALES.filter(([k]) => k !== 'toilet');
 const seg = (name, vals, labels, cur) => `<div class="seg" role="radiogroup">${vals.map((v, i) => `<label><input type="radio" name="${name}" value="${v}" ${String(cur) === String(v) ? 'checked' : ''}><span>${labels ? labels[i] : v}</span></label>`).join('')}</div>`;
 
 function startForm(placeId) {
-  const base = { reviewer: S.me && S.data.members.includes(S.me) ? S.me : '', placeId: placeId ?? null, mode: placeId ? 'exist' : 'new',
+  const base = { name: S.name, anon: S.anon, placeId: placeId ?? null, mode: placeId ? 'exist' : 'new',
     np: { name: '', kind: '', address: '', lat: null, lon: null }, verdict: null, toilet_present: undefined, toilet: null, comment: '', found: [], photos: [] };
   SCALE_KEYS.forEach(([k]) => { base[k] = null; });
   R = base; prefill();
 }
 function prefill() {
-  const r = R.placeId && R.reviewer ? S.data.reviews.find((x) => x.place_id === R.placeId && x.reviewer === R.reviewer) : null;
+  const r = R.placeId ? S.data.reviews.find((x) => x.place_id === R.placeId && x.mine) : null;
   if (!r) return;
+  R.anon = r.author_name == null; if (r.author_name) R.name = r.author_name;
   ['verdict', 'toilet', 'comment', ...SCALE_KEYS.map(([k]) => k)].forEach((k) => { R[k] = r[k] ?? (k === 'comment' ? '' : null); });
   R.toilet_present = r.toilet_present ?? 'unknown';
 }
@@ -322,8 +381,9 @@ function viewRate() {
   const dups = R.mode === 'new' && (R.np.name || R.np.lat != null) ? findDuplicates(S.data.places, { name: R.np.name, lat: R.np.lat, lon: R.np.lon }) : [];
   const tp = R.toilet_present;
   $app.innerHTML = `${bar('Оценить заведение')}<form id="f" autocomplete="off">
-    <label class="lbl" for="rv">Кто пишет</label>
-    <select id="rv" name="reviewer"><option value="">— выберите —</option>${S.data.members.map((m) => `<option ${m === R.reviewer ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
+    <label class="lbl" for="an">Ваше имя</label>
+    <input type="text" id="an" name="aname" maxlength="40" value="${esc(R.name)}" placeholder="Как подписать рецензию" ${R.anon ? 'disabled' : ''}>
+    <label class="pill" style="display:inline-block;margin-top:10px"><input type="checkbox" name="anon" ${R.anon ? 'checked' : ''}><span>Анонимно (имя не сохранится)</span></label>
     <label class="lbl" for="pl">Заведение</label>
     <select id="pl" name="place"><option value="">＋ Новое заведение</option>${[...S.sums].sort((a, b) => a.place.name.localeCompare(b.place.name, 'ru')).map((s) => `<option value="${s.place.id}" ${R.placeId === s.place.id ? 'selected' : ''}>${esc(s.place.name)}</option>`).join('')}</select>
     ${R.mode === 'new' ? `
@@ -361,7 +421,7 @@ function viewRate() {
       }
       redraw(); return;
     }
-    if (name === 'reviewer') { R.reviewer = value; if (value) { S.me = value; ls.set('gas_me', value); } prefill(); redraw(); }
+    if (name === 'anon') { R.anon = e.target.checked; redraw(); }
     else if (name === 'place') { R.placeId = value ? Number(value) : null; R.mode = value ? 'exist' : 'new'; prefill(); redraw(); }
     else if (name === 'verdict') R.verdict = Number(value);
     else if (name === 'toilet_present') { R.toilet_present = value === 'yes' ? true : value === 'no' ? false : 'unknown'; if (value !== 'yes') R.toilet = null; redraw(); }
@@ -370,6 +430,7 @@ function viewRate() {
   f.addEventListener('input', (e) => {
     const { name, value } = e.target;
     if (name === 'comment') R.comment = value;
+    else if (name === 'aname') R.name = value;
     else if (['name', 'kind', 'address'].includes(name)) { R.np[name] = value; if (name === 'name') clearTimeout(R.t), R.t = setTimeout(redrawKeepFocus, 600); }
   });
   const redrawKeepFocus = () => { const id = document.activeElement?.id; redraw(); if (id) document.getElementById(id)?.focus(); };
@@ -397,7 +458,7 @@ function viewRate() {
   f.querySelector('#send').onclick = (e) => {
     e.preventDefault(); msg.textContent = '';
     const miss = [];
-    if (!R.reviewer) miss.push('кто пишет');
+    if (!R.anon && !R.name.trim()) miss.push('имя (или «Анонимно»)');
     if (R.mode === 'new') {
       if (!R.np.name.trim()) miss.push('название'); if (!R.np.address.trim()) miss.push('адрес');
       if (R.np.lat == null) miss.push('точку на карте');
@@ -412,14 +473,16 @@ function viewRate() {
       let id = R.placeId;
       if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind.trim(), address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
       await api.saveReview({
-        place_id: id, reviewer: R.reviewer, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
+        place_id: id, name: R.name.trim(), anon: R.anon, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
         toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
       });
       let failed = 0;
       for (const ph of R.photos) {
-        try { await api.addPhoto(id, R.reviewer, await toBase64(ph.blob)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
+        try { await api.addPhoto(id, await toBase64(ph.blob)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
         URL.revokeObjectURL(ph.url);
       }
+      S.anon = R.anon; ls.set('gas_anon', S.anon ? '1' : '0');
+      if (!R.anon) { S.name = R.name.trim(); ls.set('gas_name', S.name); }
       R = null; await refresh(); go('detail', { id }, true);
       if (failed) alert(`Рецензия сохранена, но ${failed} фото не загрузились (возможно, уже 5 фото или нет связи). Добавьте их через «Изменить мою рецензию».`);
     }, msg).finally(() => { e.target.disabled = false; });
