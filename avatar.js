@@ -95,20 +95,27 @@ export function randomSeed() {
   return Math.floor(Math.random() * 4294967296) >>> 0;
 }
 
-// Особый аватар админа: золотой король в короне. Один и тот же для всех админских рецензий.
-export function kingSvg({ size = 48, animate = false, label = 'Аватар админа' } = {}) {
-  const sp = (x, y, k, d) => `<g transform="translate(${x} ${y})"><path class="tw" style="animation-delay:${d}s" d="M0-${k}L${k * 0.3}-${k * 0.3} ${k} 0 ${k * 0.3} ${k * 0.3} 0 ${k}-${k * 0.3} ${k * 0.3}-${k} 0-${k * 0.3}-${k * 0.3}Z" fill="#FFF3B0"/></g>`;
-  return `<svg class="avatar-svg${animate ? ' av-anim' : ''}" style="--d:1.4s" viewBox="0 0 100 100" width="${size}" height="${size}" role="img" aria-label="${label}"><defs><radialGradient id="avKingH" cx="50%" cy="55%" r="50%"><stop offset=".6" stop-color="#FFD84D" stop-opacity=".35"/><stop offset="1" stop-color="#FFD84D" stop-opacity="0"/></radialGradient><radialGradient id="avKingB" cx="36%" cy="28%" r="80%"><stop offset="0" stop-color="#ffe894"/><stop offset=".55" stop-color="#FFD84D"/><stop offset="1" stop-color="#D6A82F"/></radialGradient></defs>`
-    + `<circle cx="50" cy="54" r="48" fill="url(#avKingH)"/><rect x="12" y="32" width="76" height="60" rx="30" fill="url(#avKingB)"/>`
-    + `<path d="M27 38L30 15L42 27L50 9L58 27L70 15L73 38Z" fill="#FFB020" stroke="#B87400" stroke-width="1.6" stroke-linejoin="round"/><rect x="27" y="33" width="46" height="8" rx="3" fill="#E58F00"/>`
-    + `<circle cx="30" cy="14" r="2.8" fill="#8F82FF"/><circle cx="50" cy="8" r="3.2" fill="#C8F25A"/><circle cx="70" cy="14" r="2.8" fill="#8F82FF"/>`
-    + `<ellipse cx="29" cy="71" rx="4" ry="2.6" fill="#FF5C8A" opacity=".35"/><ellipse cx="71" cy="71" rx="4" ry="2.6" fill="#FF5C8A" opacity=".35"/>`
-    + `<g class="eyes"><g class="blink"><ellipse cx="37.5" cy="62" rx="4.6" ry="5.4" fill="#0E0E10"/><ellipse cx="62.5" cy="62" rx="4.6" ry="5.4" fill="#0E0E10"/><circle cx="39" cy="60" r="1.3" fill="#fff"/><circle cx="64" cy="60" r="1.3" fill="#fff"/></g></g>`
-    + `<path d="M42 73Q50 80 58 73" fill="none" stroke="#0E0E10" stroke-width="2.2" stroke-linecap="round"/>${sp(12, 36, 6, 0)}${sp(89, 46, 5, 0.8)}${sp(86, 12, 4, 1.6)}</svg>`;
+// Зерно по умолчанию — первые 32 бита кода профиля (то же число считает и база), поэтому у человека один аватар на любом телефоне.
+export function authorSeed(uuid) {
+  const n = parseInt(String(uuid).replace(/-/g, '').slice(0, 8), 16);
+  return Number.isFinite(n) ? n >>> 0 : 0;
 }
 
-// Аватар по рецензии: админская (не анонимная) получает короля, остальные — существо по зерну.
+// Общий аватар всех анонимных рецензий: безликий серый, у всех анонимов одинаковый.
+export function anonSvg({ size = 48, label = 'Аватар: аноним' } = {}) {
+  return `<svg class="avatar-svg" viewBox="0 0 100 100" width="${size}" height="${size}" role="img" aria-label="${label}"><defs><radialGradient id="avAnon" cx="36%" cy="28%" r="80%"><stop offset="0" stop-color="#8A8A96"/><stop offset=".6" stop-color="#5C5C68"/><stop offset="1" stop-color="#3A3A44"/></radialGradient></defs>`
+    + `<circle cx="50" cy="54" r="44" fill="none" stroke="#8A8A96" stroke-width="2" stroke-dasharray="4 5" opacity=".6"/>`
+    + `<rect x="16" y="26" width="68" height="60" rx="28" fill="url(#avAnon)"/>`
+    + `<path d="M33 56h12M55 56h12" stroke="#E6E6EC" stroke-width="3.4" stroke-linecap="round"/><path d="M43 71h14" stroke="#E6E6EC" stroke-width="2.6" stroke-linecap="round"/></svg>`;
+}
+
+// Маленькая корона для угла вашей плитки: видна только вам самому, в рецензиях админ выглядит как все.
+export function crownSvg({ size = 22 } = {}) {
+  return `<svg class="crown" viewBox="24 4 52 38" width="${size}" height="${Math.round(size * 0.73)}" aria-hidden="true"><path d="M27 38L30 15L42 27L50 9L58 27L70 15L73 38Z" fill="#FFB020" stroke="#B87400" stroke-width="2" stroke-linejoin="round"/><rect x="27" y="33" width="46" height="8" rx="3" fill="#E58F00"/><circle cx="30" cy="14" r="3" fill="#8F82FF"/><circle cx="50" cy="8" r="3.4" fill="#C8F25A"/><circle cx="70" cy="14" r="3" fill="#8F82FF"/></svg>`;
+}
+
+// Аватар по рецензии: анонимные (без имени) — общий безликий, остальные — существо по зерну автора.
 export function reviewAvatar(r, opts = {}) {
-  if (r.author_admin) return kingSvg(opts);
-  return avatarSvg(r.avatar_seed ?? hash32(`r${r.id}`), opts);
+  if (!r.author_name) return anonSvg(opts);
+  return avatarSvg(r.avatar_seed ?? 0, opts);
 }
