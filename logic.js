@@ -24,11 +24,12 @@ export function avgScore(reviews, key) {
 
 // ---- Итоговый балл места (0–10). Все числа настраиваются здесь ----
 export const RATING = {
-  weights: { taste: 3, impression: 2, service: 2, clean: 2, access: 1, toilet: 1 }, // вес критерия в «качестве»
-  qualityShare: 0.5,   // доля качества по критериям в баллах рецензии (остальное — звёзды)
+  weights: { taste: 3, impression: 2, service: 2, clean: 2 }, // вес критерия в «качестве»; доступность и туалет в итог не входят (показываются отдельно)
+  qualityShare: 0.65,  // доля качества по критериям в баллах рецензии (остальное — звёзды); при такой доле вклад критериев и вердикта в разброс балла примерно равен (звёзды разбросаны шире)
   biasFactor: 0.5,     // какую часть «строгости автора» выравниваем
   biasMinReviews: 4,   // выравниваем только авторов, у которых не меньше стольких рецензий
-  priorWeight: 0.5,    // вес «среднего по группе», подмешиваемого к каждому месту (одна рецензия не взлетает и не падает)
+  priorWeight: 2,      // вес «среднего по группе» в рецензиях: подмешивается к каждому месту, чтобы одна рецензия не взлетала и не падала (байесовское среднее)
+  minReviews: 2,       // меньше рецензий — «мало данных»: такое место не попадает в слот и не получает баннер
   poolMin: 6.5,        // с какого итогового балла место попадает в слот-машину
   qualityGap: 2.5,     // разброс качества (из 10), с которого мнения считаются расходящимися
   scaleGap: 3,         // разброс одной шкалы (из 5), с которого мнения считаются расходящимися
@@ -66,15 +67,20 @@ export function placeScore(reviews, model) {
   return clamp((xs.reduce((a, b) => a + b, 0) + RATING.priorWeight * model.global) / (xs.length + RATING.priorWeight), 0, 10);
 }
 
-// Звёзды места: медиана вердиктов (одна резкая оценка не переворачивает итог), округление вверх от .5. Нет рецензий — null.
+// Звёзды места: медиана вердиктов (одна резкая оценка не переворачивает итог); при чётном числе рецензий ничья округляется вниз.
+// «Ехать специально» (3) не выдаётся, если хоть кто-то поставил 0. Нет рецензий — null.
 export function placeStars(reviews) {
   if (!reviews.length) return null;
   const v = reviews.map((r) => r.verdict).sort((a, b) => a - b); const n = v.length;
-  return Math.round(n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2);
+  const med = n % 2 ? v[(n - 1) / 2] : Math.floor((v[n / 2 - 1] + v[n / 2]) / 2);
+  return med === 3 && v[0] === 0 ? 2 : med;
 }
 
-// Место попадает в слот-машину по итоговому баллу, а не по округлённым звёздам.
-export const inPool = (summary) => summary.score != null && summary.score >= RATING.poolMin;
+// Мало данных: рецензий меньше RATING.minReviews (оценка предварительная).
+export const isThin = (summary) => summary.count < RATING.minReviews;
+
+// Место попадает в слот-машину по итоговому баллу; не берём места с одной рецензией и те, где звёзды места 0 («не моё»), как бы высоко ни стояли критерии.
+export const inPool = (summary) => summary.score != null && !isThin(summary) && summary.stars >= 1 && summary.score >= RATING.poolMin;
 
 export function summarize(place, reviews, model = ratingModel(reviews)) {
   const scores = Object.fromEntries(SCALES.map(([k]) => [k, avgScore(reviews, k)]));

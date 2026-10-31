@@ -1,6 +1,6 @@
 import {
   SCALES, summarize, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin,
 } from './logic.js';
 import { makeApi, isDemo, ApiError } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
@@ -313,13 +313,13 @@ function viewList() {
   const paint = () => {
     let xs = searchSummaries(S.sums, LST.q).filter((s) => (s.stars ?? -1) >= Number(LST.min));
     xs = sortSummaries(xs, LST.sort);
-    $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => s.stars === 3 ? `<button class="item top" data-act="go" data-view="detail" data-id="${s.place.id}">
+    $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => s.stars === 3 && !isThin(s) ? `<button class="item top" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="ph" data-pid="${s.place.id}"></div><div class="shade"></div>
       <div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ЕХАТЬ СПЕЦИАЛЬНО</span></div>
       <div class="bot"><div class="txt"><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div><div class="sc">${fmt(s.score)}</div></div></button>` : `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
-      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`).join('')
+      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${isThin(s) ? '<span class="chip warn">мало данных</span>' : ''}${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`).join('')
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
     $app.querySelectorAll('.item.top .ph').forEach(paintBannerPhoto);
   };
@@ -340,7 +340,8 @@ function viewDetail() {
     <div class="ph-head"><div class="grow"><div class="label">${esc(p.kind || 'место')}</div><h1>${esc(p.name)}</h1><div class="muted small" style="margin-top:8px">${esc(p.address)}</div></div>
       ${s.score == null ? '' : `<div style="text-align:right;flex:none"><div class="big ${scoreClass(s.score)}">${fmt(s.score)}<small>/10</small></div><div style="margin-top:6px">${stars(s.stars)}</div></div>`}</div>
     ${s.count ? barsHtml(s.scores) : '<p class="muted">Пока нет рецензий.</p>'}
-    <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: половина — качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота, меньше всего доступность и туалет), половина — звёзды. Строгость авторов слегка выравнивается, а к каждому месту подмешивается немного среднего по группе, чтобы одна рецензия не решала всё. Звёзды места — медиана вердиктов.</p></details>
+    ${s.count && isThin(s) ? `<div class="notice soft">${ico('info')}<span>Пока одна рецензия: оценка предварительная, в слот-машину место попадёт после второй.</span></div>` : ''}
+    <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: примерно поровну качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота) и звёзды. Доступность и туалет показываются отдельно и в итог не входят. Строгость авторов слегка выравнивается, а к каждому месту подмешивается среднее по группе (как две лишние рецензии), чтобы одна оценка не решала всё. Звёзды места — медиана вердиктов; при ничьей берётся меньшее, а «ехать специально» не выдаётся, если кто-то поставил 0. Меньше двух рецензий — «мало данных»: такое место не попадает в слот-машину.</p></details>
     ${d?.kind === 'quality' ? `<div class="notice">${ico('warn')}<span>Мнения о качестве расходятся${d.scales.length ? `: сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : d?.kind === 'trip' ? `<div class="notice soft">${ico('info')}<span>Качество оценили похоже, но по-разному решили, стоит ли ехать специально (вердикты от ${Math.min(...vs)} до ${Math.max(...vs)}). Это не спор: у каждого своя мера «поехать специально».</span></div>` : ''}
     <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
       <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою' : 'Оценить'}</button></div>
