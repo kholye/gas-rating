@@ -9,23 +9,43 @@ export class ApiError extends Error {
   constructor(kind, detail = '') { super(kind); this.kind = kind; this.detail = detail; }
 }
 
+// Адрес функций базы. API_BASE в config.js — запасной путь через свой прокси (если у кого-то провайдер режет Supabase).
+const rpcUrl = (fn) => `${CONFIG.API_BASE || `${CONFIG.SUPABASE_URL}/rest/v1`}/rpc/${fn}`;
+const rpcHeaders = () => {
+  const h = { apikey: CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
+  if (!CONFIG.SUPABASE_ANON_KEY.startsWith('sb_')) h.Authorization = `Bearer ${CONFIG.SUPABASE_ANON_KEY}`;
+  return h;
+};
+// Чтения и повторяемые записи можно безопасно повторить, если связь оборвалась (повтор не создаст дубль).
+const RETRY = new Set(['get_all', 'get_photos', 'get_photo', 'get_covers', 'list_invites', 'save_review', 'update_avatar']);
+
 const live = (getCode, getAuthor) => {
-  // timeout: на медленной сети запрос не должен висеть вечно (иначе экран «Загружаю…» не кончается)
-  const call = async (fn, args, timeout = 25000) => {
-    const headers = { apikey: CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
-    if (!CONFIG.SUPABASE_ANON_KEY.startsWith('sb_')) headers.Authorization = `Bearer ${CONFIG.SUPABASE_ANON_KEY}`;
-    let r;
+  // timeout покрывает весь ответ, включая чтение тела: у некоторых провайдеров соединение «замирает» посреди ответа,
+  // и без этого экран «Загружаю…» или фото висели бы вечно. Обрыв в любом месте = 'offline'.
+  const once = async (fn, args, timeout) => {
     const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), timeout);
     try {
-      r = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/rpc/${fn}`, { method: 'POST', headers, signal: ctl.signal, body: JSON.stringify({ p_code: getCode(), p_author: getAuthor(), ...args }) });
-    } catch { throw new ApiError('offline'); } finally { clearTimeout(timer); }
-    if (r.ok) return r.status === 204 ? null : r.json();
-    let msg = '';
-    try { msg = (await r.json()).message || ''; } catch { /* тело не JSON */ }
-    if (msg.includes('bad_code')) throw new ApiError('bad_code');
-    if (msg.includes('forbidden')) throw new ApiError('forbidden');
-    if (r.status >= 500 || r.status === 404) throw new ApiError('db', String(r.status));
-    throw new ApiError('rejected', msg);
+      let r; let text;
+      try {
+        r = await fetch(rpcUrl(fn), { method: 'POST', headers: rpcHeaders(), signal: ctl.signal, body: JSON.stringify({ p_code: getCode(), p_author: getAuthor(), ...args }) });
+        text = await r.text();
+      } catch { throw new ApiError('offline'); }
+      if (r.ok) { try { return text ? JSON.parse(text) : null; } catch { throw new ApiError('offline'); } }
+      let msg = '';
+      try { msg = JSON.parse(text).message || ''; } catch { /* тело не JSON */ }
+      if (msg.includes('bad_code')) throw new ApiError('bad_code');
+      if (msg.includes('forbidden')) throw new ApiError('forbidden');
+      if (r.status >= 500 || r.status === 404) throw new ApiError('db', String(r.status));
+      throw new ApiError('rejected', msg);
+    } finally { clearTimeout(timer); }
+  };
+  const call = async (fn, args, timeout = 20000) => {
+    try { return await once(fn, args, timeout); }
+    catch (e) {
+      if (!RETRY.has(fn) || (e.kind !== 'offline' && e.kind !== 'db')) throw e;
+      await new Promise((r) => setTimeout(r, 800));
+      return once(fn, args, timeout);
+    }
   };
   return {
     getAll: () => call('get_all', {}),
@@ -150,5 +170,18 @@ const demo = (getCode, getAuthor) => {
     },
   };
 };
+
+// Проверка связи: сколько байт дошло и за сколько, без разбора ответа. Показывает «замирание» соединения посреди ответа.
+export async function probe(url, init = {}, timeout = 20000) {
+  const t0 = performance.now(); let bytes = 0; let status = 0;
+  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const r = await fetch(url, { cache: 'no-store', ...init, signal: ctl.signal }); status = r.status;
+    const reader = r.body.getReader();
+    for (;;) { const { done, value } = await reader.read(); if (done) break; bytes += value.length; }
+    return { ok: r.ok, status, bytes, ms: Math.round(performance.now() - t0) };
+  } catch { return { ok: false, status, bytes, ms: Math.round(performance.now() - t0), stalled: true }; } finally { clearTimeout(timer); }
+}
+export const probeRpc = (fn, body, timeout) => probe(rpcUrl(fn), { method: 'POST', headers: rpcHeaders(), body: JSON.stringify(body) }, timeout);
 
 export const makeApi = (getCode, getAuthor) => (isDemo ? demo(getCode, getAuthor) : live(getCode, getAuthor));

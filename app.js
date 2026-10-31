@@ -2,7 +2,7 @@ import {
   SCALES, summarize, RATED_SORTS, slotPool, searchSummaries, sortSummaries, findDuplicates,
   distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin,
 } from './logic.js';
-import { makeApi, isDemo, ApiError } from './api.js';
+import { makeApi, isDemo, ApiError, probe, probeRpc } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
 
 const $app = document.getElementById('app');
@@ -21,7 +21,10 @@ const loadAuthor = () => { let a = ls.get('gas_author'); if (!isUuid(a)) { a = n
 const AUTHOR = loadAuthor();
 // Зерно аватарки: выбранное кубиком (из базы или с этого телефона), иначе вычисленное из кода профиля.
 const loadSeed = () => { const raw = ls.get('gas_avatar'); const n = Number(raw); return raw && Number.isInteger(n) && n >= 0 && n <= 4294967295 ? n : authorSeed(AUTHOR); };
-const S = { code: null, seed: loadSeed(), author: AUTHOR, name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', realRole: 'user', asUser: ls.get('gas_as_user') === '1', data: null, sums: [], gate: null, err: null, map: null };
+// Выбор кубиком, который сервер ещё не подтвердил: пока он есть, данные сервера его не перетирают (иначе аватар «откатывался»).
+const PENDING = 'gas_avatar_pending';
+const pendingSeed = () => { const raw = ls.get(PENDING); const n = Number(raw); return raw && Number.isInteger(n) && n >= 0 && n <= 4294967295 ? n : null; };
+const S = { code: null, seed: loadSeed(), online: null, flash: '', author: AUTHOR, name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', realRole: 'user', asUser: ls.get('gas_as_user') === '1', data: null, sums: [], gate: null, err: null, map: null };
 
 // ---------- секретный код: из #k=… в адресе, затем адрес очищается ----------
 {
@@ -78,8 +81,13 @@ const postHtml = (r, last) => `<article class="post"><div class="side"><span cla
 // ---------- данные ----------
 function build(data) {
   S.data = data;
-  const mine = data.reviews.find((r) => r.mine && r.avatar_seed != null); // сервер хранит зерно автора: на любом телефоне аватар один
-  if (mine) { S.seed = mine.avatar_seed; ls.set('gas_avatar', String(mine.avatar_seed)); }
+  // Аватар: сервер хранит зерно в профиле (на любом устройстве один); неподтверждённый выбор кубиком важнее данных сервера.
+  const pend = pendingSeed();
+  if (pend != null) { S.seed = pend; data.reviews.forEach((r) => { if (r.mine && r.author_name) r.avatar_seed = pend; }); }
+  else {
+    const srv = data.me_seed ?? data.reviews.find((r) => r.mine && r.avatar_seed != null)?.avatar_seed;
+    if (srv != null) { S.seed = srv; ls.set('gas_avatar', String(srv)); }
+  }
   const by = new Map();
   data.reviews.forEach((r) => { if (!by.has(r.place_id)) by.set(r.place_id, []); by.get(r.place_id).push(r); });
   if (!S.name && data.me_name) { S.name = data.me_name; ls.set('gas_name', S.name); } // имя из приглашения подставляется в рецензии
@@ -94,13 +102,30 @@ const readCache = () => { try { const c = JSON.parse(ls.get(CACHE_KEY)); return 
 const writeCache = (data) => { try { ls.set(CACHE_KEY, JSON.stringify({ code: S.code, data })); } catch { /* кэш необязателен */ } };
 async function refresh() {
   if (!isDemo && !S.code) { S.gate = 'none'; return false; }
-  try { const data = await api.getAll(); build(data); if (!isDemo) writeCache(data); S.gate = null; S.err = null; return true; }
+  try { const data = await api.getAll(); build(data); if (!isDemo) writeCache(data); S.gate = null; S.err = null; S.online = true; return true; }
   catch (e) {
     if (!(e instanceof ApiError)) throw e;
+    S.online = false;
     if (e.kind === 'bad_code') S.gate = 'bad'; else S.err = e;
     return false;
   }
 }
+// После записи: если данные не обновились из-за связи, не пугаем экраном «База недоступна» — запись уже сохранена.
+async function refreshAfterWrite(note) {
+  const ok = await refresh();
+  if (!ok && !S.gate) { S.err = null; S.flash = note; }
+}
+// Отправка выбранного кубиком аватара (по очереди, последний выбор побеждает; при сбое повторим позже).
+function syncAvatar() {
+  const seed = pendingSeed(); if (seed == null || !S.code && !isDemo) return;
+  S.seedSync = (S.seedSync || Promise.resolve()).then(() => api.setAvatar(seed)).then(() => {
+    if (pendingSeed() === seed) ls.set(PENDING, '');
+    if (S.data && !isDemo) writeCache(S.data);
+  }, () => {
+    const m = $app.querySelector('#msg'); if (m && cur.view === 'me') { m.style.color = ''; m.textContent = 'Аватар сменился здесь, а в базу отправится, когда вернётся связь.'; }
+  });
+}
+window.addEventListener('online', syncAvatar);
 const placeBadge = (s) => (isThin(s) ? thinTag(s) : stars(s.stars)); // у места с малым числом рецензий звёзд нет
 const sumById = (id) => S.sums.find((s) => s.place.id === id);
 
@@ -141,15 +166,21 @@ function render() {
   if (S.gate) return viewGate();
   if (S.err) return viewError();
   if (!S.data) return viewLoading();
-  ({ menu: viewMenu, list: viewList, detail: viewDetail, map: viewMap, slot: viewSlot, rate: viewRate, me: viewMe, invites: viewInvites, editplace: viewEditPlace }[cur.view] || viewMenu)();
+  ({ menu: viewMenu, list: viewList, detail: viewDetail, map: viewMap, slot: viewSlot, rate: viewRate, me: viewMe, invites: viewInvites, editplace: viewEditPlace, net: viewNet }[cur.view] || viewMenu)();
+  if (S.flash) { $app.querySelector('header')?.insertAdjacentHTML('afterend', `<div class="notice soft">${ico('info')}<span>${esc(S.flash)} <a href="#" id="flash-retry">Обновить</a></span></div>`); S.flash = '';
+    const fr = $app.querySelector('#flash-retry'); if (fr) fr.onclick = async (e) => { e.preventDefault(); fr.textContent = 'обновляю…'; await refreshAfterWrite('Связь всё ещё плохая. Попробуйте позже.'); render(); }; }
 }
-const viewLoading = () => { $app.innerHTML = `${bar('G.A.S. Rating', false)}<p class="muted">Загружаю…</p>`; };
+// Загрузка: если база долго молчит, честно говорим об этом (запрос сам оборвётся по таймауту и покажет «Повторить»).
+const viewLoading = () => {
+  $app.innerHTML = `${bar('G.A.S. Rating', false)}<p class="muted" id="loading">Загружаю…</p>`;
+  clearTimeout(S.slowT); S.slowT = setTimeout(() => { const el = document.getElementById('loading'); if (el) el.textContent = 'Загружаю… База отвечает медленно: подождите немного, при обрыве появится кнопка «Повторить».'; }, 6000);
+};
 
 function viewError() {
   const e = S.err;
   $app.innerHTML = `${bar('G.A.S. Rating', false)}<div class="card"><h2>База недоступна</h2>
-    <p>${e.kind === 'offline' ? 'Нет связи. Проверьте интернет или включите VPN.' : 'База не отвечает. Бесплатная база засыпает, если неделю никто не заходит: откройте её в панели Supabase и нажмите «Restore», или повторите через минуту.'}</p>
-    <button class="btn accent block" id="retry">Повторить</button></div>`;
+    <p>${e.kind === 'offline' ? 'Связь с базой оборвалась или слишком медленная. Повторите; если так постоянно, откройте «Проверку связи» и пришлите результат админу.' : 'База не отвечает. Бесплатная база засыпает, если неделю никто не заходит: откройте её в панели Supabase и нажмите «Restore», или повторите через минуту.'}</p>
+    <button class="btn accent block" id="retry">Повторить</button><button class="btn block" data-act="go" data-view="net" style="margin-top:10px">Проверка связи</button></div>`;
   $app.querySelector('#retry').onclick = async () => { S.err = null; viewLoading(); await refresh(); render(); };
 }
 
@@ -184,7 +215,7 @@ function viewMenu() {
         <span class="ttl">Карта</span></button>
     </div>
     <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
-    <div class="foot"><span class="dot"></span><span>${isDemo ? 'демо' : 'база на связи'}</span></div>`;
+    <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${isDemo ? 'демо' : S.online === false ? 'нет связи с базой · показаны сохранённые данные' : S.online ? 'база на связи' : 'обновляю…'}</span></div>`;
 }
 
 function downloadBackup() {
@@ -210,17 +241,15 @@ function viewMe() {
       <label class="pill" style="display:inline-block;margin-top:12px"><input type="checkbox" id="panon" ${S.anon ? 'checked' : ''}><span>Анонимно по умолчанию</span></label>
       <p class="small muted" style="margin:10px 0 0">Анонимно: имя не сохраняется нигде, в постах будет «Аноним». Выбор можно менять в каждой рецензии отдельно.</p></div>
     <div class="err" id="msg"></div>
-    <button class="btn block" id="backup">Скачать копию оценок</button>`;
+    <button class="btn block" data-act="go" data-view="net">Проверка связи</button>
+    <button class="btn block" id="backup" style="margin-top:10px">Скачать копию оценок</button>`;
   const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
   const reroll = $('#reroll');
   if (reroll) reroll.onclick = () => {
-    // сразу показываем новый аватар, а на сервер отправляем в фоне по очереди (последний выбор побеждает)
-    const seed = randomSeed(); S.seed = seed; ls.set('gas_avatar', String(seed));
-    if (S.data) { S.data.reviews.forEach((r) => { if (r.mine && r.author_name) r.avatar_seed = seed; }); build(S.data); S.seed = seed; if (!isDemo) writeCache(S.data); }
-    render();
-    S.seedSync = (S.seedSync || Promise.resolve()).then(() => api.setAvatar(seed)).catch(() => {
-      const m = $app.querySelector('#msg'); if (m && cur.view === 'me') { m.style.color = ''; m.textContent = 'Аватар сменился только здесь: нет связи с базой. Нажмите ещё раз, когда сеть вернётся.'; }
-    });
+    // сразу показываем новый аватар, запоминаем как «ожидающий» и отправляем в фоне
+    const seed = randomSeed(); ls.set(PENDING, String(seed)); ls.set('gas_avatar', String(seed)); S.seed = seed;
+    if (S.data) { build(S.data); if (!isDemo) writeCache(S.data); }
+    render(); syncAvatar();
   };
   $('#pname').oninput = (e) => { S.name = e.target.value; ls.set('gas_name', S.name); };
   $('#panon').onchange = (e) => { S.anon = e.target.checked; ls.set('gas_anon', S.anon ? '1' : '0'); };
@@ -231,6 +260,36 @@ function viewMe() {
     const code = parsePastedLink($('#newkey').value); if (!code) return;
     S.code = code; ls.set('gas_code', code); viewLoading(); await refresh(); render();
   };
+}
+
+// ---------- проверка связи: что доходит от базы и от сайта ----------
+function viewNet() {
+  $app.innerHTML = `${bar('Проверка связи')}
+    <p class="small muted" style="margin:0 0 12px">Проверка скачивает немного данных с сайта и из базы и показывает, сколько дошло и за сколько. Если что-то «замирает», пришлите админу снимок экрана или скопированный результат.</p>
+    <div class="card"><div id="netout" class="net"><p class="muted">Нажмите «Проверить».</p></div></div>
+    <button class="btn accent block" id="netgo">Проверить</button>
+    <button class="btn block" id="netcopy" style="margin-top:10px" disabled>Скопировать результат</button><div class="err" id="msg"></div>`;
+  const out = $app.querySelector('#netout'); const msg = $app.querySelector('#msg'); let text = '';
+  const kb = (b) => `${(b / 1024).toFixed(1).replace('.', ',')} КБ`;
+  $app.querySelector('#netgo').onclick = async (e) => {
+    const btn = e.target; btn.disabled = true; out.innerHTML = ''; text = `G.A.S. проверка связи ${new Date().toLocaleString('ru')}\n${navigator.userAgent}\n`;
+    const line = (name, r, note = '') => {
+      const good = r.ok && !r.stalled; const t = `${good ? 'OK' : 'СБОЙ'} · ${name}: ${kb(r.bytes)} за ${(r.ms / 1000).toFixed(1).replace('.', ',')} с${r.status ? ` (код ${r.status})` : ''}${r.stalled ? ' — оборвалось или замерло' : ''}${note}`;
+      out.insertAdjacentHTML('beforeend', `<p class="${good ? '' : 'bad'}">${esc(t)}</p>`); text += t + '\n';
+    };
+    const tests = [['сайт (GitHub), большой файл', () => probe('vendor/leaflet/leaflet.js')]];
+    if (!isDemo) tests.push(['база, маленький ответ', () => probeRpc('get_all', { p_code: S.code, p_author: S.author })]);
+    const withPhotos = S.sums.filter((s) => s.count).map((s) => s.place.id);
+    if (withPhotos.length && !isDemo) tests.push(['база, большой ответ (фото)', () => probeRpc('get_covers', { p_code: S.code, p_author: S.author, p_ids: withPhotos })]);
+    for (const [name, run] of tests) { out.insertAdjacentHTML('beforeend', `<p class="muted" id="netcur">${esc(name)}…</p>`); const r = await run(); out.querySelector('#netcur')?.remove(); line(name, r); }
+    const big = text.includes('СБОЙ · база, большой');
+    const small = text.includes('СБОЙ · база, маленький');
+    const site = text.includes('СБОЙ · сайт');
+    const verdict = site ? 'Похоже, плохой интернет вообще.' : small ? 'База недоступна с этой сети: возможно, провайдер её блокирует.' : big ? 'Маленькие ответы базы доходят, большие замирают: так ведут себя некоторые провайдеры с серверами за Cloudflare. Помогает VPN или прокси (см. инструкцию у админа).' : 'Всё доходит.';
+    out.insertAdjacentHTML('beforeend', `<p><b>${esc(verdict)}</b></p>`); text += verdict + '\n';
+    btn.disabled = false; $app.querySelector('#netcopy').disabled = false;
+  };
+  $app.querySelector('#netcopy').onclick = async () => { try { await navigator.clipboard.writeText(text); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { msg.style.color = ''; msg.textContent = 'Не удалось скопировать: сделайте снимок экрана.'; } };
 }
 
 // ---------- админ: приглашения ----------
@@ -297,7 +356,7 @@ function viewEditPlace() {
     e.preventDefault();
     draft.name = $app.querySelector('#en').value.trim(); draft.kind = $app.querySelector('#ek').value.trim(); draft.address = $app.querySelector('#ea').value.trim();
     if (!draft.name || !draft.address) { msg.textContent = 'Нужны название и адрес.'; return; }
-    guard(async () => { await api.savePlace({ id: p.id, ...draft }); await refresh(); go('detail', { id: p.id }, true); }, msg);
+    guard(async () => { await api.savePlace({ id: p.id, ...draft }); await refreshAfterWrite('Место сохранено, но список ещё не обновился: связь плохая.'); go('detail', { id: p.id }, true); }, msg);
   };
 }
 
@@ -370,15 +429,15 @@ function viewDetail() {
     ${d?.kind === 'quality' ? `<div class="notice">${ico('warn')}<span>Мнения о качестве расходятся${d.scales.length ? `: сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : d?.kind === 'trip' ? `<div class="notice soft">${ico('info')}<span>Качество оценили похоже, но по-разному решили, стоит ли ехать специально (вердикты от ${Math.min(...vs)} до ${Math.max(...vs)}). Это не спор: у каждого своя мера «поехать специально».</span></div>` : ''}
     <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
       <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою' : 'Оценить'}</button></div>
-    ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
+    ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="small muted" id="phnote" style="margin-top:6px">Загружаю фото…</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
     <div class="err" id="msg"></div>
     <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${admin ? `<button class="btn" data-act="go" data-view="editplace" data-id="${p.id}">Изменить место</button>` : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
   const msg = $app.querySelector('#msg');
   const del = $app.querySelector('#delrev');
-  if (del) del.onclick = () => confirm('Удалить вашу рецензию?') && guard(async () => { await api.deleteReview(mine.id); await refresh(); go('detail', { id: p.id }, true); }, msg);
+  if (del) del.onclick = () => confirm('Удалить вашу рецензию?') && guard(async () => { del.disabled = true; del.textContent = 'Удаляю…'; await api.deleteReview(mine.id); await refreshAfterWrite('Рецензия удалена, но список ещё не обновился: связь плохая.'); go('detail', { id: p.id }, true); }, msg).finally(() => { if (del.isConnected) { del.disabled = false; del.textContent = 'Удалить мою рецензию'; } });
   const dp = $app.querySelector('#delplace');
-  if (dp) dp.onclick = () => confirm('Удалить заведение?') && guard(async () => { await api.deletePlace(p.id); await refresh(); go('list', {}, true); }, msg);
-  $app.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => confirm('Удалить эту рецензию?') && guard(async () => { await api.deleteReview(Number(b.dataset.del)); await refresh(); go('detail', { id: p.id }, true); }, msg); });
+  if (dp) dp.onclick = () => confirm('Удалить заведение?') && guard(async () => { await api.deletePlace(p.id); await refreshAfterWrite('Заведение удалено, но список ещё не обновился: связь плохая.'); go('list', {}, true); }, msg);
+  $app.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => confirm('Удалить эту рецензию?') && guard(async () => { b.disabled = true; await api.deleteReview(Number(b.dataset.del)); await refreshAfterWrite('Рецензия удалена, но список ещё не обновился: связь плохая.'); go('detail', { id: p.id }, true); }, msg).finally(() => { b.disabled = false; }); });
   if (s.count) loadPhotos(p.id);
 }
 
@@ -386,12 +445,19 @@ function viewDetail() {
 const openPhoto = (src, id, isThumb) => {
   const box = Object.assign(document.createElement('div'), { className: 'lightbox', innerHTML: `<img src="${src}" alt="Фото">${isThumb ? '<span class="lb-load">загружаю полное фото…</span>' : ''}` });
   box.onclick = () => box.remove(); document.body.appendChild(box);
-  if (isThumb) api.getPhoto(id).then((full) => { if (full && box.isConnected) box.querySelector('img').src = `data:image/jpeg;base64,${full}`; }).catch(() => {}).finally(() => box.querySelector('.lb-load')?.remove());
+  if (isThumb) api.getPhoto(id).then((full) => { if (full && box.isConnected) box.querySelector('img').src = `data:image/jpeg;base64,${full}`; box.querySelector('.lb-load')?.remove(); })
+    .catch(() => { const l = box.querySelector('.lb-load'); if (l) l.textContent = 'полное фото не загрузилось, показана уменьшенная копия'; });
 };
 async function loadPhotos(placeId) {
   let list;
-  try { list = await api.getPhotos(placeId); } catch { return; } // без фото страница остаётся рабочей
+  const note = $app.querySelector('#phnote');
+  try { list = await api.getPhotos(placeId); } catch {
+    // без фото страница остаётся рабочей, но говорим об этом и даём повторить
+    if (note && cur.view === 'detail' && cur.p.id === placeId) { note.innerHTML = 'Фото не загрузились: связь плохая. <a href="#">Повторить</a>'; note.querySelector('a').onclick = (e) => { e.preventDefault(); note.textContent = 'Загружаю фото…'; loadPhotos(placeId); }; }
+    return;
+  }
   if (cur.view !== 'detail' || cur.p.id !== placeId) return;
+  if (note) note.remove();
   for (const ph of list) {
     const box = [...$app.querySelectorAll('.thumbs[data-rid]')].find((b) => Number(b.dataset.rid) === ph.review_id); if (!box) continue;
     const src = `data:image/jpeg;base64,${ph.data}`;
@@ -407,16 +473,16 @@ async function loadPhotos(placeId) {
     box.appendChild(wrap);
   }
 }
-// Сжатие на телефоне: стороны до 1280 px, JPEG ≤ 350 КБ; при перерисовке теряются данные EXIF (в том числе место съёмки).
+// Сжатие на телефоне: стороны до 1200 px, JPEG ≤ 250 КБ; при перерисовке теряются данные EXIF (в том числе место съёмки).
 async function compress(file) {
   const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  let max = 1280; let q = 0.78;
+  let max = 1200; let q = 0.76;
   for (let i = 0; i < 6; i++) {
     const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
     const c = Object.assign(document.createElement('canvas'), { width: Math.round(bmp.width * k), height: Math.round(bmp.height * k) });
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
     const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', q));
-    if (blob && blob.size <= 350000) return blob;
+    if (blob && blob.size <= 250000) return blob;
     q -= 0.08; max *= 0.85;
   }
   throw new Error('photo_too_big');
@@ -581,7 +647,7 @@ function viewRate() {
     if (R.toilet_present === undefined) miss.push('туалет (есть / нет / не помню)');
     else if (R.toilet_present === true && R.toilet == null) miss.push('оценку туалета');
     if (miss.length) { msg.textContent = `Не заполнено: ${miss.join(', ')}.`; return; }
-    e.target.disabled = true;
+    const btn = e.target; btn.disabled = true; btn.textContent = 'Отправляю…';
     guard(async () => {
       let id = R.placeId;
       if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind.trim(), address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
@@ -590,15 +656,16 @@ function viewRate() {
         toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
       });
       let failed = 0;
-      for (const ph of R.photos) {
+      for (const [i, ph] of R.photos.entries()) {
+        btn.textContent = `Загружаю фото ${i + 1} из ${R.photos.length}…`;
         try { await api.addPhoto(id, await toBase64(ph.blob), await toBase64(ph.thumb)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
         URL.revokeObjectURL(ph.url);
       }
       S.anon = R.anon; ls.set('gas_anon', S.anon ? '1' : '0');
       if (!R.anon) { S.name = R.name.trim(); ls.set('gas_name', S.name); }
-      R = null; await refresh(); go('detail', { id }, true);
+      R = null; await refreshAfterWrite('Рецензия сохранена, но список ещё не обновился: связь плохая.'); go('detail', { id }, true);
       if (failed) alert(`Рецензия сохранена, но ${failed} фото не загрузились (возможно, уже 5 фото или нет связи). Добавьте их через «Изменить мою рецензию».`);
-    }, msg).finally(() => { e.target.disabled = false; });
+    }, msg).finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Отправить'; } });
   };
 }
 
@@ -750,12 +817,15 @@ function viewSlot() {
 
 // ---------- старт ----------
 (async () => {
+  window.__gasBoot = true; // сайт загрузился (см. страховку в index.html)
   const cached = !isDemo && S.code ? readCache() : null;
   if (cached) { build(cached); S.gate = null; render(); } else viewLoading();
   const before = cached ? JSON.stringify(cached) : null;
   const ok = await refresh();
+  clearTimeout(S.slowT);
+  if (ok) syncAvatar(); // неподтверждённый выбор кубиком отправляем снова
   if (!cached) return render();
-  if (!ok) { if (S.gate) return render(); S.err = null; return; } // нет связи: остаёмся на данных из кэша
+  if (!ok) { if (S.gate) return render(); S.err = null; if (cur.view === 'menu') render(); return; } // нет связи: остаёмся на данных из кэша
   // свежие данные: перерисовываем только безопасные экраны (не форму оценки)
-  if (JSON.stringify(S.data) !== before && (cur.view === 'menu' || cur.view === 'list')) render();
+  if ((JSON.stringify(S.data) !== before && (cur.view === 'menu' || cur.view === 'list')) || cur.view === 'menu') render();
 })();

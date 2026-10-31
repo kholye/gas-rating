@@ -3,4 +3,5 @@
 export const CONFIG = {
   SUPABASE_URL: 'https://wpdnyplfkaesanndftyg.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_YGM9u1bJer5346DkZqJ8zQ_2labbAAp',
+  API_BASE: '', // пусто = напрямую в Supabase; адрес своего прокси, если провайдеры режут Supabase (см. docs/runbook.md)
 };
