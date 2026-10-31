@@ -10,13 +10,15 @@ export class ApiError extends Error {
 }
 
 const live = (getCode, getAuthor) => {
-  const call = async (fn, args) => {
+  // timeout: на медленной сети запрос не должен висеть вечно (иначе экран «Загружаю…» не кончается)
+  const call = async (fn, args, timeout = 25000) => {
     const headers = { apikey: CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
     if (!CONFIG.SUPABASE_ANON_KEY.startsWith('sb_')) headers.Authorization = `Bearer ${CONFIG.SUPABASE_ANON_KEY}`;
     let r;
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), timeout);
     try {
-      r = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/rpc/${fn}`, { method: 'POST', headers, body: JSON.stringify({ p_code: getCode(), p_author: getAuthor(), ...args }) });
-    } catch { throw new ApiError('offline'); }
+      r = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/rpc/${fn}`, { method: 'POST', headers, signal: ctl.signal, body: JSON.stringify({ p_code: getCode(), p_author: getAuthor(), ...args }) });
+    } catch { throw new ApiError('offline'); } finally { clearTimeout(timer); }
     if (r.ok) return r.status === 204 ? null : r.json();
     let msg = '';
     try { msg = (await r.json()).message || ''; } catch { /* тело не JSON */ }
@@ -36,8 +38,10 @@ const live = (getCode, getAuthor) => {
     setAvatar: (seed) => call('update_avatar', { p_seed: seed }),
     deleteReview: (review_id) => call('delete_review', { p_review_id: review_id }),
     deletePlace: (id) => call('delete_place', { p_id: id }),
-    addPhoto: (place_id, b64) => call('add_photo', { p_place_id: place_id, p_data: b64 }),
-    getPhotos: (place_id) => call('get_photos', { p_place_id: place_id }),
+    addPhoto: (place_id, b64, thumb) => call('add_photo', { p_place_id: place_id, p_data: b64, p_thumb: thumb ?? null }, 90000),
+    getPhotos: (place_id) => call('get_photos', { p_place_id: place_id }, 45000),
+    getPhoto: (id) => call('get_photo', { p_id: id }, 90000),                 // полное фото по нажатию
+    getCovers: (ids) => call('get_covers', { p_ids: ids }, 45000),            // миниатюры для баннеров одним запросом
     deletePhoto: (id) => call('delete_photo', { p_id: id }),
     listInvites: () => call('list_invites', {}),
     createInvite: (name) => call('create_invite', { p_name: name }),
@@ -112,16 +116,18 @@ const demo = (getCode, getAuthor) => {
       for (let i = photos.length - 1; i >= 0; i--) if (photos[i].review_id === review_id) photos.splice(i, 1);
       commit();
     },
-    addPhoto: async (place_id, data) => {
+    addPhoto: async (place_id, data, thumb) => {
       const r = mem.reviews.find((x) => x.place_id === place_id && x.author === getAuthor());
       if (!r) throw new ApiError('rejected', 'no_such_review');
       if (photos.filter((p) => p.review_id === r.id).length >= 5) throw new ApiError('rejected', 'too_many_photos');
-      photos.push({ id: nextPhoto++, review_id: r.id, place_id, data }); return nextPhoto - 1;
+      photos.push({ id: nextPhoto++, review_id: r.id, place_id, data, thumb }); return nextPhoto - 1;
     },
     getPhotos: async (place_id) => photos.filter((p) => p.place_id === place_id).map((p) => {
       const r = mem.reviews.find((x) => x.id === p.review_id);
-      return { id: p.id, review_id: p.review_id, mine: !!r && r.author === getAuthor(), data: p.data };
+      return { id: p.id, review_id: p.review_id, mine: !!r && r.author === getAuthor(), thumb: !!p.thumb, data: p.thumb ?? p.data };
     }),
+    getPhoto: async (id) => photos.find((p) => p.id === id)?.data ?? null,
+    getCovers: async (ids) => ids.map((id) => ({ place_id: id, data: photos.find((p) => p.place_id === id && p.thumb)?.thumb })).filter((c) => c.data),
     deletePhoto: async (id) => {
       const i = photos.findIndex((p) => p.id === id); if (i < 0) return;
       const r = mem.reviews.find((x) => x.id === photos[i].review_id);

@@ -88,9 +88,13 @@ function build(data) {
   const model = ratingModel(data.reviews); // общий средний балл и поправка на строгость авторов
   S.sums = data.places.map((p) => summarize(p, by.get(p.id) || [], model));
 }
+// Кэш последних данных: сайт открывается сразу, а свежие данные подтягиваются в фоне (важно на медленной сети).
+const CACHE_KEY = 'gas_cache_v1';
+const readCache = () => { try { const c = JSON.parse(ls.get(CACHE_KEY)); return c && c.code === S.code ? c.data : null; } catch { return null; } };
+const writeCache = (data) => { try { ls.set(CACHE_KEY, JSON.stringify({ code: S.code, data })); } catch { /* кэш необязателен */ } };
 async function refresh() {
   if (!isDemo && !S.code) { S.gate = 'none'; return false; }
-  try { build(await api.getAll()); S.gate = null; S.err = null; return true; }
+  try { const data = await api.getAll(); build(data); if (!isDemo) writeCache(data); S.gate = null; S.err = null; return true; }
   catch (e) {
     if (!(e instanceof ApiError)) throw e;
     if (e.kind === 'bad_code') S.gate = 'bad'; else S.err = e;
@@ -209,10 +213,14 @@ function viewMe() {
     <button class="btn block" id="backup">Скачать копию оценок</button>`;
   const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
   const reroll = $('#reroll');
-  if (reroll) reroll.onclick = async () => {
-    S.seed = randomSeed(); ls.set('gas_avatar', String(S.seed));
-    try { await api.setAvatar(S.seed); await refresh(); } catch { /* аватар сменится и локально; в рецензиях обновится при следующем сохранении */ }
+  if (reroll) reroll.onclick = () => {
+    // сразу показываем новый аватар, а на сервер отправляем в фоне по очереди (последний выбор побеждает)
+    const seed = randomSeed(); S.seed = seed; ls.set('gas_avatar', String(seed));
+    if (S.data) { S.data.reviews.forEach((r) => { if (r.mine && r.author_name) r.avatar_seed = seed; }); build(S.data); S.seed = seed; if (!isDemo) writeCache(S.data); }
     render();
+    S.seedSync = (S.seedSync || Promise.resolve()).then(() => api.setAvatar(seed)).catch(() => {
+      const m = $app.querySelector('#msg'); if (m && cur.view === 'me') { m.style.color = ''; m.textContent = 'Аватар сменился только здесь: нет связи с базой. Нажмите ещё раз, когда сеть вернётся.'; }
+    });
   };
   $('#pname').oninput = (e) => { S.name = e.target.value; ls.set('gas_name', S.name); };
   $('#panon').onchange = (e) => { S.anon = e.target.checked; ls.set('gas_anon', S.anon ? '1' : '0'); };
@@ -295,15 +303,19 @@ function viewEditPlace() {
 
 // ---------- список ----------
 const LST = { q: '', sort: 'score', min: '0' };
-// фото для баннера 3 звёзд: первое фото места, грузится отдельно и запоминается (null = фото нет)
+// обложки баннеров 3 звёзд: миниатюры первых фото, одним запросом на все баннеры; запоминаются (null = фото нет)
 const bannerPhotos = new Map();
-async function paintBannerPhoto(el) {
-  const id = Number(el.dataset.pid);
-  if (!bannerPhotos.has(id)) {
-    try { const list = await api.getPhotos(id); bannerPhotos.set(id, list.length ? `data:image/jpeg;base64,${list[0].data}` : null); } catch { return; }
+async function paintBanners() {
+  const els = [...$app.querySelectorAll('.item.top .ph')];
+  const need = els.map((e) => Number(e.dataset.pid)).filter((id) => !bannerPhotos.has(id));
+  if (need.length) {
+    try {
+      const got = await api.getCovers(need);
+      need.forEach((id) => bannerPhotos.set(id, null));
+      got.forEach((c) => bannerPhotos.set(c.place_id, `data:image/jpeg;base64,${c.data}`));
+    } catch { return; }
   }
-  const src = bannerPhotos.get(id);
-  if (src && el.isConnected) { el.style.backgroundImage = `url("${src}")`; el.classList.add('has'); }
+  els.forEach((el) => { const src = bannerPhotos.get(Number(el.dataset.pid)); if (src && el.isConnected) { el.style.backgroundImage = `url("${src}")`; el.classList.add('has'); } });
 }
 function viewList() {
   $app.innerHTML = `${bar('Все оценённые')}
@@ -334,7 +346,7 @@ function viewList() {
       return div + card(s);
     }).join('')
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
-    $app.querySelectorAll('.item.top .ph').forEach(paintBannerPhoto);
+    paintBanners();
   };
   $app.querySelector('#q').oninput = (e) => { LST.q = e.target.value; paint(); };
   $app.querySelector('#sort').onchange = (e) => { LST.sort = e.target.value; paint(); };
@@ -371,9 +383,10 @@ function viewDetail() {
 }
 
 // ---------- фото ----------
-const openPhoto = (src) => {
-  const box = Object.assign(document.createElement('div'), { className: 'lightbox', innerHTML: `<img src="${src}" alt="Фото">` });
+const openPhoto = (src, id, isThumb) => {
+  const box = Object.assign(document.createElement('div'), { className: 'lightbox', innerHTML: `<img src="${src}" alt="Фото">${isThumb ? '<span class="lb-load">загружаю полное фото…</span>' : ''}` });
   box.onclick = () => box.remove(); document.body.appendChild(box);
+  if (isThumb) api.getPhoto(id).then((full) => { if (full && box.isConnected) box.querySelector('img').src = `data:image/jpeg;base64,${full}`; }).catch(() => {}).finally(() => box.querySelector('.lb-load')?.remove());
 };
 async function loadPhotos(placeId) {
   let list;
@@ -384,7 +397,7 @@ async function loadPhotos(placeId) {
     const src = `data:image/jpeg;base64,${ph.data}`;
     const wrap = Object.assign(document.createElement('span'), { className: 'thumb' });
     const img = Object.assign(document.createElement('img'), { src, alt: 'Фото', loading: 'lazy' });
-    img.onclick = () => openPhoto(src); wrap.appendChild(img);
+    img.onclick = () => openPhoto(src, ph.id, ph.thumb); wrap.appendChild(img);
     if (ph.mine || S.role === 'admin') {
       const x = Object.assign(document.createElement('button'), { type: 'button', className: 'x', textContent: '×' });
       x.setAttribute('aria-label', 'Удалить фото');
@@ -407,6 +420,14 @@ async function compress(file) {
     q -= 0.08; max *= 0.85;
   }
   throw new Error('photo_too_big');
+}
+// Миниатюра для списка и баннеров: сторона до 640 px, около 40–60 КБ.
+async function makeThumb(blob) {
+  const bmp = await createImageBitmap(blob);
+  const k = Math.min(1, 640 / Math.max(bmp.width, bmp.height));
+  const c = Object.assign(document.createElement('canvas'), { width: Math.round(bmp.width * k), height: Math.round(bmp.height * k) });
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.72));
 }
 const toBase64 = (blob) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
 
@@ -508,7 +529,7 @@ function viewRate() {
     if (e.target.id === 'ph') {
       msg.textContent = '';
       for (const file of [...e.target.files].slice(0, 5 - R.photos.length)) {
-        try { const blob = await compress(file); R.photos.push({ blob, url: URL.createObjectURL(blob) }); }
+        try { const blob = await compress(file); R.photos.push({ blob, thumb: await makeThumb(blob), url: URL.createObjectURL(blob) }); }
         catch { msg.textContent = 'Не удалось подготовить одно из фото (формат или размер).'; }
       }
       redraw(); return;
@@ -570,7 +591,7 @@ function viewRate() {
       });
       let failed = 0;
       for (const ph of R.photos) {
-        try { await api.addPhoto(id, await toBase64(ph.blob)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
+        try { await api.addPhoto(id, await toBase64(ph.blob), await toBase64(ph.thumb)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
         URL.revokeObjectURL(ph.url);
       }
       S.anon = R.anon; ls.set('gas_anon', S.anon ? '1' : '0');
@@ -729,7 +750,12 @@ function viewSlot() {
 
 // ---------- старт ----------
 (async () => {
-  viewLoading();
-  await refresh();
-  render();
+  const cached = !isDemo && S.code ? readCache() : null;
+  if (cached) { build(cached); S.gate = null; render(); } else viewLoading();
+  const before = cached ? JSON.stringify(cached) : null;
+  const ok = await refresh();
+  if (!cached) return render();
+  if (!ok) { if (S.gate) return render(); S.err = null; return; } // нет связи: остаёмся на данных из кэша
+  // свежие данные: перерисовываем только безопасные экраны (не форму оценки)
+  if (JSON.stringify(S.data) !== before && (cur.view === 'menu' || cur.view === 'list')) render();
 })();
