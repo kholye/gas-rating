@@ -2,7 +2,7 @@ import {
   SCALES, summarize, RATED_SORTS, slotPool, searchSummaries, sortSummaries, findDuplicates,
   distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin,
 } from './logic.js';
-import { makeApi, isDemo, ApiError, probe, probeRpc } from './api.js';
+import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
 
 const $app = document.getElementById('app');
@@ -278,14 +278,19 @@ function viewNet() {
       out.insertAdjacentHTML('beforeend', `<p class="${good ? '' : 'bad'}">${esc(t)}</p>`); text += t + '\n';
     };
     const tests = [['сайт (GitHub), большой файл', () => probe('vendor/leaflet/leaflet.js')]];
-    if (!isDemo) tests.push(['база, маленький ответ', () => probeRpc('get_all', { p_code: S.code, p_author: S.author })]);
     const withPhotos = S.sums.filter((s) => s.count).map((s) => s.place.id);
-    if (withPhotos.length && !isDemo) tests.push(['база, большой ответ (фото)', () => probeRpc('get_covers', { p_code: S.code, p_author: S.author, p_ids: withPhotos })]);
+    const label = { proxy: 'через Яндекс', direct: 'напрямую' };
+    if (!isDemo) for (const via of routes()) {
+      tests.push([`база ${label[via]}, маленький ответ`, () => probeRpc('get_all', { p_code: S.code, p_author: S.author }, 20000, via)]);
+      if (withPhotos.length) tests.push([`база ${label[via]}, большой ответ (фото)`, () => probeRpc('get_covers', { p_code: S.code, p_author: S.author, p_ids: withPhotos }, 20000, via)]);
+    }
+    if (!isDemo) text += `сейчас сайт ходит: ${label[currentRoute()]}\n`;
     for (const [name, run] of tests) { out.insertAdjacentHTML('beforeend', `<p class="muted" id="netcur">${esc(name)}…</p>`); const r = await run(); out.querySelector('#netcur')?.remove(); line(name, r); }
-    const big = text.includes('СБОЙ · база, большой');
-    const small = text.includes('СБОЙ · база, маленький');
+    const okVia = (via) => !text.includes(`СБОЙ · база ${label[via]}`);
     const site = text.includes('СБОЙ · сайт');
-    const verdict = site ? 'Похоже, плохой интернет вообще.' : small ? 'База недоступна с этой сети: возможно, провайдер её блокирует.' : big ? 'Маленькие ответы базы доходят, большие замирают: так ведут себя некоторые провайдеры с серверами за Cloudflare. Помогает VPN или прокси (см. инструкцию у админа).' : 'Всё доходит.';
+    const good = routes().filter(okVia);
+    const verdict = isDemo ? 'Демо-режим: база не проверялась.' : site ? 'Похоже, плохой интернет вообще.' : good.length === routes().length ? 'Всё доходит.'
+      : good.length ? `Работает путь «${label[good[0]]}»: сайт сам будет ходить им.` : 'База недоступна ни одним путём с этой сети. Пришлите этот результат админу.';
     out.insertAdjacentHTML('beforeend', `<p><b>${esc(verdict)}</b></p>`); text += verdict + '\n';
     btn.disabled = false; $app.querySelector('#netcopy').disabled = false;
   };

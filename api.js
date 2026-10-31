@@ -9,25 +9,34 @@ export class ApiError extends Error {
   constructor(kind, detail = '') { super(kind); this.kind = kind; this.detail = detail; }
 }
 
-// Адрес функций базы. API_BASE в config.js — запасной путь через свой прокси (если у кого-то провайдер режет Supabase).
-const rpcUrl = (fn) => `${CONFIG.API_BASE || `${CONFIG.SUPABASE_URL}/rest/v1`}/rpc/${fn}`;
-const rpcHeaders = () => {
+// Два пути к базе. 'direct' — напрямую в Supabase. 'proxy' — через шлюз Яндекса (API_BASE в config.js, local/proxy/api-gateway.yaml):
+// у части российских провайдеров соединения с Supabase (он за Cloudflare) обрываются, а Яндекс доступен; зато через VPN
+// с иностранным адресом шлюз Яндекса может быть недоступен. Поэтому сайт пробует оба пути и запоминает тот, что сработал.
+// Через шлюз запрос «простой» (text/plain, без своих заголовков): браузеру не нужен лишний предварительный запрос, ключ добавляет шлюз.
+const ROUTES = CONFIG.API_BASE ? ['proxy', 'direct'] : ['direct'];
+const ROUTE_KEY = 'gas_route';
+const rpcUrl = (fn, route = ROUTES[0]) => `${route === 'proxy' ? CONFIG.API_BASE.replace(/\/$/, '') : `${CONFIG.SUPABASE_URL}/rest/v1`}/rpc/${fn}`;
+const rpcHeaders = (route = ROUTES[0]) => {
+  if (route === 'proxy') return { 'Content-Type': 'text/plain;charset=UTF-8' };
   const h = { apikey: CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
   if (!CONFIG.SUPABASE_ANON_KEY.startsWith('sb_')) h.Authorization = `Bearer ${CONFIG.SUPABASE_ANON_KEY}`;
   return h;
 };
+let route = (() => { try { const r = localStorage.getItem(ROUTE_KEY); return ROUTES.includes(r) ? r : ROUTES[0]; } catch { return ROUTES[0]; } })();
+const remember = (r) => { route = r; try { localStorage.setItem(ROUTE_KEY, r); } catch { /* необязательно */ } };
+export const currentRoute = () => route;
 // Чтения и повторяемые записи можно безопасно повторить, если связь оборвалась (повтор не создаст дубль).
 const RETRY = new Set(['get_all', 'get_photos', 'get_photo', 'get_covers', 'list_invites', 'save_review', 'update_avatar']);
 
 const live = (getCode, getAuthor) => {
   // timeout покрывает весь ответ, включая чтение тела: у некоторых провайдеров соединение «замирает» посреди ответа,
   // и без этого экран «Загружаю…» или фото висели бы вечно. Обрыв в любом месте = 'offline'.
-  const once = async (fn, args, timeout) => {
+  const once = async (fn, args, timeout, via) => {
     const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), timeout);
     try {
       let r; let text;
       try {
-        r = await fetch(rpcUrl(fn), { method: 'POST', headers: rpcHeaders(), signal: ctl.signal, body: JSON.stringify({ p_code: getCode(), p_author: getAuthor(), ...args }) });
+        r = await fetch(rpcUrl(fn, via), { method: 'POST', headers: rpcHeaders(via), signal: ctl.signal, body: JSON.stringify({ p_code: getCode(), p_author: getAuthor(), ...args }) });
         text = await r.text();
       } catch { throw new ApiError('offline'); }
       if (r.ok) { try { return text ? JSON.parse(text) : null; } catch { throw new ApiError('offline'); } }
@@ -35,16 +44,21 @@ const live = (getCode, getAuthor) => {
       try { msg = JSON.parse(text).message || ''; } catch { /* тело не JSON */ }
       if (msg.includes('bad_code')) throw new ApiError('bad_code');
       if (msg.includes('forbidden')) throw new ApiError('forbidden');
-      if (r.status >= 500 || r.status === 404) throw new ApiError('db', String(r.status));
+      if (r.status >= 500 || r.status === 404 || r.status === 405) throw new ApiError('db', String(r.status));
       throw new ApiError('rejected', msg);
     } finally { clearTimeout(timer); }
   };
+  // Сначала запомненный путь; при обрыве повторяемые запросы пробуют другой путь (или тот же ещё раз, если путь один).
   const call = async (fn, args, timeout = 20000) => {
-    try { return await once(fn, args, timeout); }
+    const first = route;
+    try { return await once(fn, args, timeout, first); }
     catch (e) {
       if (!RETRY.has(fn) || (e.kind !== 'offline' && e.kind !== 'db')) throw e;
-      await new Promise((r) => setTimeout(r, 800));
-      return once(fn, args, timeout);
+      const other = ROUTES.find((r) => r !== first) ?? first;
+      if (other === first) await new Promise((r) => setTimeout(r, 800));
+      const res = await once(fn, args, timeout, other);
+      if (other !== first) remember(other);
+      return res;
     }
   };
   return {
@@ -182,6 +196,7 @@ export async function probe(url, init = {}, timeout = 20000) {
     return { ok: r.ok, status, bytes, ms: Math.round(performance.now() - t0) };
   } catch { return { ok: false, status, bytes, ms: Math.round(performance.now() - t0), stalled: true }; } finally { clearTimeout(timer); }
 }
-export const probeRpc = (fn, body, timeout) => probe(rpcUrl(fn), { method: 'POST', headers: rpcHeaders(), body: JSON.stringify(body) }, timeout);
+export const probeRpc = (fn, body, timeout, via) => probe(rpcUrl(fn, via), { method: 'POST', headers: rpcHeaders(via), body: JSON.stringify(body) }, timeout);
+export const routes = () => [...ROUTES];
 
 export const makeApi = (getCode, getAuthor) => (isDemo ? demo(getCode, getAuthor) : live(getCode, getAuthor));
