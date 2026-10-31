@@ -224,3 +224,74 @@ export const displayName = (r) => r.author_name || 'Аноним';
 
 // Код профиля — обычный uuid (его можно перенести на другой телефон).
 export const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || '').trim());
+
+// ---- Ссылка на место из приложения карт → точка, название, адрес ----
+// Разбирает то, что уже есть в самой ссылке (сайты карт мы не скачиваем). Короткие ссылки (yandex.ru/maps/-/…, go.2gis.com,
+// maps.app.goo.gl, maps.apple/p/…) помечаются short: их раскрывает база (resolve_link), потом ссылка разбирается ещё раз.
+const okLL = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
+const pair = (s) => { const m = /(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)/.exec(s || ''); return m ? [Number(m[1]), Number(m[2])] : null; };
+const dec = (s) => { try { return decodeURIComponent(String(s).replace(/\+/g, ' ')); } catch { return String(s); } };
+const r6 = (x) => Math.round(x * 1e6) / 1e6;
+const isCoords = (s) => /^\s*-?\d{1,3}(?:\.\d+)?\s*,\s*-?\d{1,3}(?:\.\d+)?\s*$/.test(s || '');
+export const MAP_APPS = 'Яндекс Карты, 2ГИС, Google Maps, Apple Maps, OpenStreetMap, Organic Maps';
+
+export function parseMapLink(text) {
+  const t = String(text || '').trim(); if (!t) return null;
+  const found = /(https?:\/\/[^\s<>"']+|geo:[^\s<>"']+)/i.exec(t);
+  if (!found) { const p = pair(t); return p && okLL(p[0], p[1]) ? { source: 'координаты', lat: r6(p[0]), lon: r6(p[1]), name: '', address: '', short: false, url: t } : null; }
+  const before = t.slice(0, found.index).split(/\n/).map((x) => x.trim()).filter(Boolean).pop() || '';
+  const lead = before && !/^https?:/i.test(before) && before.length <= 80 ? before.split(',')[0].replace(/[\s:—–-]+$/, '').trim() : '';
+  const out = (source, lat, lon, name = '', extra = {}) => ({ source, lat: okLL(lat, lon) ? r6(lat) : null, lon: okLL(lat, lon) ? r6(lon) : null, name: String(name || lead || '').trim(), address: '', short: false, url: found ? found[1] : t, ...extra });
+  let raw = found[1].replace(/[,.;!?]+$/, '');
+  while (raw.endsWith(')') && (raw.match(/\)/g) || []).length > (raw.match(/\(/g) || []).length) raw = raw.slice(0, -1); // скобка из текста вокруг ссылки
+  if (/^geo:/i.test(raw)) { // geo:59.9,30.3?q=59.9,30.3(Название)
+    const p = pair(raw.slice(4)); const q = /[?&]q=([^&]+)/.exec(raw); const qv = q ? dec(q[1]) : '';
+    const nm = /\(([^)]+)\)\s*$/.exec(qv); const qp = pair(qv);
+    const ll = p && okLL(p[0], p[1]) ? p : qp;
+    return out('ссылка geo', ll?.[0], ll?.[1], nm ? nm[1] : (qv && !qp ? qv : ''));
+  }
+  let u; try { u = new URL(raw); } catch { return null; }
+  const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  const full = dec(u.href);
+  const q = (k) => u.searchParams.get(k);
+  const lonlat = (s) => { const p = pair(s); return p ? [p[1], p[0]] : null; }; // у Яндекса и 2ГИС порядок «долгота,широта»
+
+  if (/(^|\.)yandex\.[a-z.]+$/.test(host) || host === 'ya.ru') {
+    if (/\/maps\/-\//.test(u.pathname)) return out('Яндекс Карты', null, null, '', { short: true, url: raw });
+    const pt = q('pt') ? q('pt').split('~')[0] : null;
+    const ll = lonlat(q('poi[point]')) || lonlat(q('whatshere[point]')) || lonlat(pt) || lonlat(q('ll'));
+    const text = q('text') && !isCoords(q('text')) ? q('text') : '';
+    return out('Яндекс Карты', ll?.[0], ll?.[1], text);
+  }
+  if (host === 'maps.app.goo.gl' || host === 'goo.gl') return out('Google Maps', null, null, '', { short: true, url: raw });
+  if (/(^|\.)google\.[a-z.]+$/.test(host) && (/^\/maps/.test(u.pathname) || host.startsWith('maps.'))) {
+    const d = /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/.exec(full); const at = /@(-?\d+\.\d+),(-?\d+\.\d+)/.exec(full);
+    const pq = pair(q('q')) || pair(q('query')) || pair(q('ll')) || pair(q('center')) || pair(q('destination'));
+    const ll = d ? [Number(d[1]), Number(d[2])] : at ? [Number(at[1]), Number(at[2])] : pq;
+    const place = /\/maps\/(?:place|search)\/([^/@]+)/.exec(u.pathname);
+    const qText = [q('q'), q('query')].find((x) => x && !isCoords(x)) || '';
+    return out('Google Maps', ll?.[0], ll?.[1], place ? dec(place[1]) : qText);
+  }
+  if (host === 'go.2gis.com') return out('2ГИС', null, null, '', { short: true, url: raw });
+  if (/(^|\.)2gis\.[a-z.]+$/.test(host)) {
+    const g = /\/geo\/\d+\/(-?\d+\.\d+),(-?\d+\.\d+)/.exec(u.pathname);
+    const ll = lonlat(q('m')) || (g ? [Number(g[2]), Number(g[1])] : null);
+    return out('2ГИС', ll?.[0], ll?.[1]);
+  }
+  if (host === 'maps.apple' || /^maps\.apple\/p\//.test(host + u.pathname)) return out('Apple Maps', null, null, '', { short: true, url: raw });
+  if (host === 'maps.apple.com') {
+    const ll = pair(q('ll')) || pair(q('coordinate')) || pair(q('sll')) || pair(q('q'));
+    const name = q('name') || (q('q') && !isCoords(q('q')) ? q('q') : '');
+    return out('Apple Maps', ll?.[0], ll?.[1], name, { address: q('address') || '' });
+  }
+  if (host === 'openstreetmap.org' || host === 'osm.org') {
+    const h = /map=\d+\/(-?\d+\.\d+)\/(-?\d+\.\d+)/.exec(u.hash);
+    const ll = q('mlat') && q('mlon') ? [Number(q('mlat')), Number(q('mlon'))] : h ? [Number(h[1]), Number(h[2])] : null;
+    return out('OpenStreetMap', ll?.[0], ll?.[1]);
+  }
+  if (host === 'omaps.app' || host === 'ge0.me') { // координаты зашифрованы, берём только название из конца ссылки
+    const seg = u.pathname.split('/').filter(Boolean)[1];
+    return out('Organic Maps', null, null, seg ? dec(seg).replace(/_/g, ' ') : '');
+  }
+  return null;
+}

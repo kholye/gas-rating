@@ -26,7 +26,7 @@ let route = (() => { try { const r = localStorage.getItem(ROUTE_KEY); return ROU
 const remember = (r) => { route = r; try { localStorage.setItem(ROUTE_KEY, r); } catch { /* необязательно */ } };
 export const currentRoute = () => route;
 // Чтения и повторяемые записи можно безопасно повторить, если связь оборвалась (повтор не создаст дубль).
-const RETRY = new Set(['get_all', 'get_photos', 'get_photo', 'get_covers', 'list_invites', 'save_review', 'update_avatar']);
+const RETRY = new Set(['get_all', 'get_photos', 'get_photo', 'get_covers', 'list_invites', 'save_review', 'update_avatar', 'resolve_link']);
 
 // trouble(fn, kind, info): сообщение для журнала ошибок, когда запрос окончательно не удался или сайт сменил путь к базе.
 const live = (getCode, getAuthor, trouble = () => {}) => {
@@ -88,6 +88,7 @@ const live = (getCode, getAuthor, trouble = () => {}) => {
     deleteInvite: (member) => call('delete_invite', { p_member: member }),
     logError: (x) => call('log_error', { p_kind: x.kind, p_message: x.message, p_detail: x.detail || null, p_url: x.url || null, p_ua: x.ua || null, p_version: x.version || null }, 10000),
     listErrors: () => call('list_errors', {}),
+    resolveLink: (url) => call('resolve_link', { p_url: url }, 20000), // короткая ссылка карт → полная
     clearErrors: () => call('clear_errors', {}),
   };
 };
@@ -186,6 +187,7 @@ const demo = (getCode, getAuthor) => {
     revokeInvite: async (member) => { if (role() !== 'admin') forbid(); invites.find((m) => m.author === member).has_key = false; },
     logError: async () => {},
     listErrors: async () => { if (role() !== 'admin') forbid(); return []; },
+    resolveLink: async () => null,
     clearErrors: async () => {},
     deleteInvite: async (member) => { if (role() !== 'admin') forbid(); const i = invites.findIndex((m) => m.author === member); if (i >= 0) invites.splice(i, 1); },
     deletePlace: async (id) => {

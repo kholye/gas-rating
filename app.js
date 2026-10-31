@@ -1,6 +1,6 @@
 import {
   SCALES, summarize, RATED_SORTS, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace, parseMapLink, MAP_APPS,
 } from './logic.js';
 import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
@@ -723,6 +723,9 @@ function viewRate() {
     <label class="lbl" for="pl">Заведение</label>
     <select id="pl" name="place"><option value="">＋ Новое заведение</option>${[...S.sums].sort((a, b) => a.place.name.localeCompare(b.place.name, 'ru')).map((s) => `<option value="${s.place.id}" ${R.placeId === s.place.id ? 'selected' : ''}>${esc(s.place.name)}</option>`).join('')}</select>
     ${R.mode === 'new' ? `
+      <label class="lbl" for="mlink">Ссылка на место из карт</label>
+      <div class="row"><input type="text" id="mlink" name="mlink" value="${esc(R.np.link || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставьте ссылку «Поделиться»"><button type="button" class="btn" id="fromlink">Подставить</button></div>
+      <div class="small muted" id="linkst" style="margin-top:6px">${esc(R.linkNote || `Поддерживаются ${MAP_APPS}. Точка, название и адрес подставятся сами — останется проверить.`)}</div>
       <label class="lbl" for="nm">Название</label><input type="text" id="nm" name="name" value="${esc(R.np.name)}" maxlength="120">
       <label class="lbl" for="kd">Тип (кафе, ресторан, фастфуд…)</label><input type="text" id="kd" name="kind" list="kinds" value="${esc(R.np.kind)}" maxlength="40">
       <datalist id="kinds"><option>кафе<option>ресторан<option>фастфуд<option>шаурмечная<option>шашлычная<option>бар<option>пекарня</datalist>
@@ -768,6 +771,7 @@ function viewRate() {
     const { name, value } = e.target;
     if (name === 'comment') R.comment = value;
     else if (name === 'aname') R.name = value;
+    else if (name === 'mlink') R.np.link = value;
     else if (['name', 'kind', 'address'].includes(name)) { R.np[name] = value; if (name === 'name') clearTimeout(R.t), R.t = setTimeout(redrawKeepFocus, 600); }
   });
   const redrawKeepFocus = () => { const id = document.activeElement?.id; redraw(); if (id) document.getElementById(id)?.focus(); };
@@ -776,6 +780,45 @@ function viewRate() {
     const pk = e.target.closest('[data-pick]'); if (pk) { e.preventDefault(); R.placeId = Number(pk.dataset.pick); R.mode = 'exist'; prefill(); redraw(); }
     const fd = e.target.closest('[data-found]'); if (fd) { const x = R.found[fd.dataset.found]; R.np.lat = +(+x.lat).toFixed(6); R.np.lon = +(+x.lon).toFixed(6); R.np.address = R.np.address || x.display_name; R.found = []; redraw(); }
   });
+  // ссылка из приложения карт: разбираем, короткую раскрывает база, адрес и название — по точке (OpenStreetMap)
+  const fromLink = async () => {
+    const st = (t) => { const el = f.querySelector('#linkst'); if (el) el.textContent = t; };
+    let p = parseMapLink(R.np.link);
+    if (!p) { st(`Не узнаю эту ссылку. Поддерживаются ${MAP_APPS}.`); return; }
+    if (p.short) {
+      st('Раскрываю короткую ссылку…');
+      let res = null; try { res = await api.resolveLink(p.url); } catch { /* ниже сообщение */ }
+      const name0 = p.name; const full = typeof res === 'string' ? res : res?.url;
+      p = full ? parseMapLink(full) : null;
+      if (p && !p.name && name0) p.name = name0; // название из текста перед короткой ссылкой
+      if (!R) return;
+      if (!p || p.short || p.lat == null) {
+        st('Не удалось раскрыть короткую ссылку. Откройте её в браузере и скопируйте полный адрес из адресной строки.');
+        report('link', 'не раскрылась короткая ссылка', `${R.np.link.slice(0, 300)}\n${JSON.stringify(res).slice(0, 1500)}`);
+        if (name0 && !R.np.name.trim()) { R.np.name = name0; redraw(); }
+        return;
+      }
+    }
+    if (p.name && !R.np.name.trim()) R.np.name = p.name;
+    if (p.address && !R.np.address.trim()) R.np.address = p.address;
+    if (p.lat != null) {
+      R.np.lat = p.lat; R.np.lon = p.lon; st('Точка поставлена, ищу адрес…');
+      try {
+        const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&accept-language=ru&lat=${p.lat}&lon=${p.lon}`);
+        const j = r.ok ? await r.json() : {}; const a = j.address || {};
+        const street = [a.road || a.pedestrian || a.footway || a.square, a.house_number].filter(Boolean).join(', ');
+        const addr = [street, a.city || a.town || a.village].filter(Boolean).join(', ') || j.display_name || '';
+        if (R && !R.np.address.trim() && addr) R.np.address = addr;
+        if (R && !R.np.name.trim() && j.name && ['amenity', 'shop', 'tourism', 'leisure'].includes(j.category)) R.np.name = j.name;
+      } catch { /* адрес можно ввести руками */ }
+    }
+    if (!R) return;
+    R.linkNote = p.lat != null ? `Из ссылки (${p.source}): точка${R.np.name ? ', название' : ''}${R.np.address ? ', адрес' : ''}. Проверьте и поправьте, если нужно.`
+      : `${p.source}: в ссылке нет координат${p.name ? ' (название подставлено)' : ''}${p.source === '2ГИС' ? ', а сайт 2ГИС не пускает автоматические запросы' : ''} — поставьте точку на карте или нажмите «Найти».`;
+    redraw();
+  };
+  const fl = f.querySelector('#fromlink');
+  if (fl) { fl.onclick = fromLink; f.querySelector('#mlink').addEventListener('paste', () => setTimeout(() => { R.np.link = f.querySelector('#mlink').value; fromLink(); }, 0)); }
   const find = f.querySelector('#find');
   if (find) find.onclick = async () => {
     const q = R.np.address || R.np.name; if (!q.trim()) { msg.textContent = 'Введите адрес или название.'; return; }
