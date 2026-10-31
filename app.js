@@ -201,8 +201,8 @@ function railHtml(v) {
   return `<div class="r-brand"><b>G.A.S.</b><span>RATING</span></div>
     <button class="r-me" data-act="go" data-view="me" aria-label="Открыть профиль"><span class="me-tile">${avatarSvg(S.seed, { size: 40, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg() : ''}</span>
       <span class="grow"><b>${esc(meName())}</b><small>${S.role === 'admin' ? 'админ' : 'участник'} · профиль</small></span></button>
-    <button class="r-cta${v === 'slot' ? ' on' : ''}" data-act="go" data-view="slot">${ico('slot')}<span>Выбрать место</span></button>
-    <nav class="r-list">${nav('list', 'Все оценённые', 'list', v === 'list' || v === 'detail', `<small>${rated}</small>`)}${nav('map', 'Карта', 'map', v === 'map')}${nav('rate', 'Оценить заведение', 'plus', v === 'rate')}</nav>
+    <button class="r-cta${v === 'slot' ? ' on' : ''}" data-act="go" data-view="slot"><span class="tag">01 · Слот-машина</span><span class="ttl">Выбрать<br>место</span><span class="letters" aria-hidden="true"><b>G</b><b>A</b><b>S</b></span></button>
+    <nav class="r-list">${nav('list', 'Все оценённые', 'list', v === 'list' || v === 'detail' || v === 'map', `<small>${rated}</small>`)}${nav('rate', 'Оценить заведение', 'plus', v === 'rate')}</nav>
     ${isDemo ? '<div class="notice">Демо-режим: выдуманные примеры.</div>' : ''}
     <div class="r-foot"><button class="r-nav" data-act="theme">${themeIcon()}<span>Сменить тему</span></button>
       <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${netStatus()}</span></div></div>`;
@@ -753,7 +753,7 @@ function viewRate() {
 
 // ---------- слот-машина ----------
 const T = { rig: ls.get('gas_rig') !== '0', nearby: ls.get('gas_nearby') !== '0', center: null, radius: 5, geo: 'idle', spinning: false, manual: false };
-const ROW = 40; // высота строки барабана, px (как в стилях .reel .cell)
+const ROW = 40; // высота строки барабана на телефоне, px; на компьютере берётся из вёрстки (.reel .cell)
 const G = () => window.gsap; // если GSAP не загрузился, всё работает без анимации
 const calm = () => !G() || matchMedia('(prefers-reduced-motion: reduce)').matches;
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -861,7 +861,7 @@ function viewSlot() {
       const seq = ['', 'GAS'[i], '', ...Array.from({ length: n }, any), any(), win.place.name, any()];
       const strip = $(`#reel${i} .strip`);
       strip.innerHTML = seq.map((x, k) => `<div class="cell${k === 1 ? ' idle' : ''}${k === seq.length - 2 ? ' last' : ''}">${esc(x)}</div>`).join('');
-      const endY = -(seq.length - 3) * ROW;
+      const endY = -(seq.length - 3) * ($(`#reel${i} .cell`)?.offsetHeight || ROW);
       const land = () => { strip.style.transform = `translateY(${endY}px)`; strip.querySelector('.last').classList.add('hit'); if (done.push(i) === 3) reveal(win); };
       if (still) return land();
       const dur = 1.7 + i * 0.55;
@@ -880,12 +880,20 @@ function viewSlot() {
   function reveal(win) {
     T.spinning = false;
     const km = T.center ? distanceKm(T.center.lat, T.center.lon, win.place.lat, win.place.lon) : null;
-    $('#out').innerHTML = `<div class="result"><div class="row" style="align-items:flex-start;gap:12px"><div class="grow"><h3>${esc(win.place.name)}</h3>
+    $('#out').innerHTML = `<div class="res-grid"><div class="result"><div class="row" style="align-items:flex-start;gap:12px"><div class="grow"><h3>${esc(win.place.name)}</h3>
       <div class="muted small" style="margin-top:6px">${esc(win.place.address)}${km != null ? ` · ${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''}</div></div>
       <div class="big ${scoreClass(win.score)}">${fmt(win.score)}<small>/10</small></div></div>
       ${barsHtml(win.scores, ['taste', 'service', 'toilet'])}
       <div class="row"><a class="btn accent" style="flex:1.3" href="${esc(mapsLink(win.place.lat, win.place.lon, win.place.name, ios))}">Открыть в картах</a>
-      <button class="btn" style="flex:1" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div></div>`;
+      <button class="btn icon-only" id="slotshare" aria-label="Поделиться местом" title="Поделиться">${ico('share')}</button>
+      <button class="btn" style="flex:1" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div><div class="err" id="slotmsg"></div></div>
+      <div id="resmap" class="res-map dk-only"></div></div>`;
+    $('#slotshare').onclick = () => sharePlace(win, $('#slotmsg'));
+    if (DESK.matches && window.L) {
+      if (S.map) { S.map.remove(); S.map = null; }
+      S.map = L.map('resmap', { zoomControl: false, attributionControl: false }).setView([win.place.lat, win.place.lon], 15); tiles().addTo(S.map);
+      L.marker([win.place.lat, win.place.lon], { icon: L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pin"><span>${win.stars}</span></div>` }) }).addTo(S.map);
+    }
     paintStatus();
     if (calm()) return;
     const g = G();
@@ -894,7 +902,7 @@ function viewSlot() {
     const machine = $('#machine'); const colors = ['#C8F25A', '#8F82FF', '#FFB86B'];
     for (let k = 0; k < 18; k++) {
       const el = Object.assign(document.createElement('i'), { className: 'fx' }); el.style.background = colors[k % 3];
-      el.style.left = `${machine.clientWidth / 2}px`; el.style.top = '78px'; machine.appendChild(el);
+      const band = machine.querySelector('.band'); el.style.left = `${machine.clientWidth / 2}px`; el.style.top = `${band ? band.offsetTop + band.offsetHeight / 2 + 16 : 78}px`; machine.appendChild(el);
       g.fromTo(el, { x: 0, y: 0, scale: 1, rotation: 0, autoAlpha: 1 }, { x: rnd(-150, 150), y: rnd(-80, 70), rotation: rnd(-200, 200), scale: 0, duration: 0.9, ease: 'power2.out', onComplete: () => el.remove() });
     }
     g.from('.result', { y: 24, autoAlpha: 0, duration: 0.5, ease: 'power3.out' });
