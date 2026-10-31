@@ -57,7 +57,9 @@ const themeIcon = () => ico({ light: 'sun', dark: 'moon' }[ls.get('gas_theme')] 
 
 // ---------- общие куски разметки ----------
 const scoreClass = (x) => (x == null ? '' : x >= 6.5 ? 'b2' : x >= 5 ? 'b1' : 'b0');
-const stars = (n) => (n == null ? '<span class="badge">—</span>' : `<span class="badge b${n}" aria-label="${n} из 3">${n}/3</span>`);
+const STAR = '<path d="M12 2.5l2.9 6.2 6.8.8-5 4.7 1.3 6.7L12 17.5l-6 3.4 1.3-6.7-5-4.7 6.8-.8z"/>';
+const stars = (n) => (n == null ? '<span class="badge">—</span>'
+  : `<span class="badge b${n}" role="img" aria-label="${n} из 3">${[0, 1, 2].map((i) => `<svg class="${i < n ? 'on' : 'off'}" viewBox="0 0 24 24" aria-hidden="true">${STAR}</svg>`).join('')}</span>`);
 const bar = (title, back = true) => `<header class="bar">${back ? `<button class="icon-btn" data-act="back" aria-label="Назад">${ico('back')}</button>` : ''}<h1>${esc(title)}</h1><button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>`;
 const SHORT = { access: 'Доступ', taste: 'Вкус', service: 'Сервис', clean: 'Чистота', toilet: 'Туалет', impression: 'Впечатл.' };
 // Шкалы в виде 5 полосок: заполнено столько, сколько округлённая оценка.
@@ -248,6 +250,16 @@ function viewEditPlace() {
 
 // ---------- список ----------
 const LST = { q: '', sort: 'score', min: '0' };
+// фото для баннера 3 звёзд: первое фото места, грузится отдельно и запоминается (null = фото нет)
+const bannerPhotos = new Map();
+async function paintBannerPhoto(el) {
+  const id = Number(el.dataset.pid);
+  if (!bannerPhotos.has(id)) {
+    try { const list = await api.getPhotos(id); bannerPhotos.set(id, list.length ? `data:image/jpeg;base64,${list[0].data}` : null); } catch { return; }
+  }
+  const src = bannerPhotos.get(id);
+  if (src && el.isConnected) { el.style.backgroundImage = `url("${src}")`; el.classList.add('has'); }
+}
 function viewList() {
   $app.innerHTML = `${bar('Все оценённые')}
     <input type="search" id="q" placeholder="Поиск по названию или адресу" value="${esc(LST.q)}">
@@ -258,11 +270,15 @@ function viewList() {
   const paint = () => {
     let xs = searchSummaries(S.sums, LST.q).filter((s) => (s.stars ?? -1) >= Number(LST.min));
     xs = sortSummaries(xs, LST.sort);
-    $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
+    $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => s.stars === 3 ? `<button class="item top" data-act="go" data-view="detail" data-id="${s.place.id}">
+      <div class="ph" data-pid="${s.place.id}"></div><div class="shade"></div>
+      <div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ЕХАТЬ СПЕЦИАЛЬНО</span></div>
+      <div class="bot"><div><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div><div class="sc">${fmt(s.score)}</div></div></button>` : `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
       <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`).join('')
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
+    $app.querySelectorAll('.item.top .ph').forEach(paintBannerPhoto);
   };
   $app.querySelector('#q').oninput = (e) => { LST.q = e.target.value; paint(); };
   $app.querySelector('#sort').onchange = (e) => { LST.sort = e.target.value; paint(); };
@@ -417,7 +433,7 @@ function viewRate() {
       ${dups.length ? `<div class="notice">Похоже, такое место уже есть: ${dups.map((d) => `<a href="#" data-pick="${d.id}">${esc(d.name)}</a>`).join(', ')}. Нажмите на название, чтобы оценить его.</div>` : ''}` : ''}
     <label class="lbl">Общий вердикт G.A.S.</label>
     ${seg('verdict', [0, 1, 2, 3], ['0', '1', '2', '3'], R.verdict)}
-    <div class="small muted" style="margin-top:4px">3 — ехать специально · 2 — стоит развернуться · 1 — рекомендуем, но не поедем · 0 — не рекомендуем</div>
+    <div class="small muted" style="margin-top:4px">3 — ехать специально · 2 — стоит заехать · 1 — хорошо, если окажусь рядом · 0 — не моё</div>
     ${SCALE_KEYS.map(([k, n]) => `<div class="scale-row"><div class="name">${n}</div>${seg(k, [1, 2, 3, 4, 5], null, R[k])}</div>`).join('')}
     <div class="scale-row"><div class="name">Туалет</div>${seg('toilet_present', ['yes', 'no', 'unknown'], ['Есть', 'Нет', 'Не помню'], tp === true ? 'yes' : tp === false ? 'no' : tp)}</div>
     ${tp === true ? `<div class="scale-row"><div class="name">Оценка туалета</div>${seg('toilet', [1, 2, 3, 4, 5], null, R.toilet)}</div>` : ''}
