@@ -81,6 +81,7 @@ function build(data) {
   if (mine) { S.seed = mine.avatar_seed; ls.set('gas_avatar', String(mine.avatar_seed)); }
   const by = new Map();
   data.reviews.forEach((r) => { if (!by.has(r.place_id)) by.set(r.place_id, []); by.get(r.place_id).push(r); });
+  if (!S.name && data.me_name) { S.name = data.me_name; ls.set('gas_name', S.name); } // имя из приглашения подставляется в рецензии
   S.realRole = data.role || 'user';
   S.role = S.realRole === 'admin' && S.asUser ? 'user' : S.realRole; // «режим пользователя» для админа: только вид интерфейса, ключ тот же
   const model = ratingModel(data.reviews); // общий средний балл и поправка на строгость авторов
@@ -134,7 +135,7 @@ function render() {
   if (S.gate) return viewGate();
   if (S.err) return viewError();
   if (!S.data) return viewLoading();
-  ({ menu: viewMenu, list: viewList, detail: viewDetail, map: viewMap, slot: viewSlot, rate: viewRate, me: viewMe, editplace: viewEditPlace }[cur.view] || viewMenu)();
+  ({ menu: viewMenu, list: viewList, detail: viewDetail, map: viewMap, slot: viewSlot, rate: viewRate, me: viewMe, invites: viewInvites, editplace: viewEditPlace }[cur.view] || viewMenu)();
 }
 const viewLoading = () => { $app.innerHTML = `${bar('G.A.S. Rating', false)}<p class="muted">Загружаю…</p>`; };
 
@@ -149,7 +150,7 @@ function viewError() {
 function viewGate() {
   const bad = S.gate === 'bad';
   $app.innerHTML = `${bar('G.A.S. Rating', false)}<div class="card"><h2>${bad ? 'Код не подходит' : 'Нужна ваша ссылка'}</h2>
-    <p>${bad ? 'Сохранённый код устарел или неверен. Попросите у друзей новую ссылку и вставьте её сюда.' : 'Откройте сайт по ссылке, которую вам прислали. Если сайт открылся без неё (например, с иконки на домашнем экране), вставьте ссылку сюда один раз.'}</p>
+    <p>${bad ? 'Сохранённая ссылка устарела или отозвана. Попросите у админа новую личную ссылку и вставьте её сюда.' : 'Откройте сайт по личной ссылке, которую вам прислали. Если сайт открылся без неё (например, с иконки на домашнем экране), вставьте ссылку сюда один раз.'}</p>
     <label class="lbl" for="paste">Ссылка или код</label><input type="text" id="paste" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…/#k=…">
     <div class="err" id="msg"></div><button class="btn accent block" id="enter" style="margin-top:12px">Войти</button></div>`;
   $app.querySelector('#enter').onclick = async () => {
@@ -162,7 +163,6 @@ function viewGate() {
 
 function viewMenu() {
   const rated = S.sums.filter((s) => s.count).length;
-  const dots = [10, 30, 50, 70, 90, 110, 130].flatMap((x, i) => [8, 24, 40].map((y, j) => ((i + j) % 3 === 1 || (x === 70 && y === 24) || (x === 110 && y === 24) ? '' : `<circle cx="${x}" cy="${y}" r="2"/>`))).join('');
   $app.innerHTML = `<header class="bar mehead"><button class="me-tile" data-act="go" data-view="me" aria-label="Открыть профиль">${avatarSvg(S.seed, { size: 52, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg() : ''}</button>
       <div class="grow"><div class="mename">${esc(S.role === 'admin' ? (S.name || 'Админ') : S.name && !S.anon ? S.name : 'Аноним')}</div><div class="label" style="font-size:11px;margin-top:2px">${S.role === 'admin' ? 'админ' : 'участник'} · профиль</div></div>
       <button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
@@ -172,7 +172,9 @@ function viewMenu() {
     <div class="grid2">
       <button class="tile sq" data-act="go" data-view="list"><span class="tag">02 · Список</span><span><span class="num">${String(rated).padStart(2, '0')}</span><span class="ttl">Все оценённые</span></span></button>
       <button class="tile sq map" data-act="go" data-view="map"><span class="tag">03 · Карта</span>
-        <svg class="dots" viewBox="0 0 140 44" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g fill="var(--ln2)">${dots}</g><circle cx="70" cy="24" r="5" fill="var(--acc)"/><circle cx="110" cy="24" r="4" fill="var(--vio)"/></svg>
+        <span class="grid" aria-hidden="true"></span>
+        <svg class="route" viewBox="0 0 169 152" preserveAspectRatio="none" aria-hidden="true"><path d="M20 94 C 55 100, 75 70, 117 50" fill="none" stroke="var(--acc)" stroke-width="1.5" stroke-dasharray="3 5" stroke-linecap="round" vector-effect="non-scaling-stroke" opacity=".7"/></svg>
+        <i class="pin"></i><i class="pin2"></i>
         <span class="ttl">Карта</span></button>
     </div>
     <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
@@ -185,27 +187,22 @@ function downloadBackup() {
   a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// ---------- профиль: имя, код профиля, ключ доступа ----------
+// ---------- профиль: имя, ключ доступа, приглашения (админ) ----------
 function viewMe() {
   $app.innerHTML = `${bar('Профиль')}
     <div class="card" style="display:flex;align-items:center;gap:16px"><span class="me-tile" style="width:96px;height:96px;border-radius:30px;flex:none">${avatarSvg(S.seed, { size: 84, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg({ size: 30 }) : ''}</span>
-      <div class="grow"><div class="label">Аватар</div><p class="small muted" style="margin:6px 0 10px">${S.role === 'admin' ? 'Корона на аватаре видна только вам: в рецензиях вы выглядите как все. ' : ''}Аватар выпал по вашему коду профиля и показывается у ваших именных рецензий. Если не нравится, перебросьте кубик. У анонимных рецензий общий безликий аватар.</p>
+      <div class="grow"><div class="label">Аватар</div><p class="small muted" style="margin:6px 0 10px">${S.role === 'admin' ? 'Корона на аватаре видна только вам: в рецензиях вы выглядите как все. ' : ''}Аватар выпал случайно и показывается у ваших именных рецензий. Если не нравится, перебросьте кубик. У анонимных рецензий общий безликий аватар.</p>
       <button class="btn" id="reroll">Перебросить кубик</button></div></div>
     <div class="card"><div class="label">Доступ</div>
       <p style="margin:8px 0 0">${S.role === 'admin' ? 'Вы вошли как <b>админ</b>: можно править места, удалять любые рецензии и фото.' : 'Вы вошли как <b>участник</b>: можно добавлять места, оценки и фото, править и удалять только своё.'}</p>
       ${S.realRole === 'admin' ? `<p class="small muted" style="margin:8px 0 0">${S.asUser ? 'Включён режим пользователя: кнопки админа спрятаны, чтобы случайно ничего не удалить.' : 'Режим пользователя прячет кнопки админа, чтобы случайно ничего не удалить.'}</p><button class="btn" id="asuser" style="margin-top:8px">${S.asUser ? 'Вернуться в режим админа' : 'Переключиться в режим пользователя'}</button>` : ''}
+      ${S.role === 'admin' ? '<button class="btn accent block" data-act="go" data-view="invites" style="margin-top:12px">Приглашения</button>' : ''}
       <label class="lbl" for="newkey">Сменить ключ доступа (ссылка или код)</label>
       <div class="row"><input type="text" id="newkey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…/#k=…"><button class="btn" id="setkey">Войти</button></div></div>
     <div class="card"><div class="label">Имя в рецензиях</div>
       <label class="lbl" for="pname">Ваше имя</label><input type="text" id="pname" maxlength="40" value="${esc(S.name)}" placeholder="Как подписывать рецензии">
       <label class="pill" style="display:inline-block;margin-top:12px"><input type="checkbox" id="panon" ${S.anon ? 'checked' : ''}><span>Анонимно по умолчанию</span></label>
       <p class="small muted" style="margin:10px 0 0">Анонимно: имя не сохраняется нигде, в постах будет «Аноним». Выбор можно менять в каждой рецензии отдельно.</p></div>
-    ${S.realRole === 'admin' && !isDemo ? `<div class="card"><div class="label">Код профиля</div>
-      <p class="small muted" style="margin:8px 0 0">Вам он не нужен: у админа один профиль на всех устройствах, он привязан к админскому ключу.</p></div>` : `<div class="card"><div class="label">Код профиля</div>
-      <p class="small muted" style="margin:8px 0 10px">По нему сайт узнаёт ваши рецензии. Сохраните его, чтобы править свои оценки на другом телефоне. Никому не показывайте.</p>
-      <div class="row"><input type="text" id="mycode" readonly value="${esc(S.author)}" style="font-family:var(--mono);font-size:13px"><button class="btn" id="copycode">Копировать</button></div>
-      <label class="lbl" for="othercode">Ввести код профиля с другого телефона</label>
-      <div class="row"><input type="text" id="othercode" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"><button class="btn" id="setcode">Применить</button></div></div>`}
     <div class="err" id="msg"></div>
     <button class="btn block" id="backup">Скачать копию оценок</button>`;
   const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
@@ -220,16 +217,57 @@ function viewMe() {
   $('#backup').onclick = downloadBackup;
   const asuser = $('#asuser');
   if (asuser) asuser.onclick = () => { S.asUser = !S.asUser; ls.set('gas_as_user', S.asUser ? '1' : '0'); S.role = S.realRole === 'admin' && S.asUser ? 'user' : S.realRole; render(); };
-  if ($('#copycode')) $('#copycode').onclick = async () => { try { await navigator.clipboard.writeText(S.author); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { $('#mycode').select(); msg.textContent = 'Выделено: скопируйте вручную.'; } };
-  if ($('#setcode')) $('#setcode').onclick = async () => {
-    const c = $('#othercode').value.trim().toLowerCase();
-    if (!isUuid(c)) { msg.style.color = ''; msg.textContent = 'Это не похоже на код профиля.'; return; }
-    S.author = c; ls.set('gas_author', c); ls.set('gas_avatar', ''); S.seed = authorSeed(c); await refresh(); render();
-  };
   $('#setkey').onclick = async () => {
     const code = parsePastedLink($('#newkey').value); if (!code) return;
     S.code = code; ls.set('gas_code', code); viewLoading(); await refresh(); render();
   };
+}
+
+// ---------- админ: приглашения ----------
+function viewInvites() {
+  if (S.role !== 'admin') return go('menu', {}, true);
+  $app.innerHTML = `${bar('Приглашения')}
+    <p class="small muted" style="margin:0 0 12px">У каждого человека личная ссылка: по ней сайт знает, кто это, на любом телефоне. Ссылка показывается один раз, отправьте её сразу. Потерялась — выпустите новую, старая перестанет работать.</p>
+    <div id="fresh"></div><div id="inv"><p class="muted">Загружаю…</p></div>
+    <div class="card"><div class="label">Новый человек</div>
+      <label class="lbl" for="iname">Имя</label><input type="text" id="iname" maxlength="40" autocomplete="off" placeholder="Как подписывать рецензии">
+      <div class="err" id="msg"></div><button class="btn accent block" id="mk" style="margin-top:12px">Создать приглашение</button></div>`;
+  const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
+  const urlFor = (key) => `${location.origin}${location.pathname}#k=${key}`;
+  const showLink = (name, key) => {
+    const url = urlFor(key);
+    $('#fresh').innerHTML = `<div class="card" style="border-color:var(--acc)"><div class="label">Ссылка для: ${esc(name)}</div>
+      <p class="small muted" style="margin:8px 0">Покажу один раз. Скопируйте и отправьте человеку.</p>
+      <div class="row"><input type="text" id="flink" readonly value="${esc(url)}" style="font-family:var(--mono);font-size:12px"><button class="btn" id="fcopy">Копировать</button></div></div>`;
+    $('#fcopy').onclick = async () => { try { await navigator.clipboard.writeText(url); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { $('#flink').select(); msg.style.color = ''; msg.textContent = 'Выделено: скопируйте вручную.'; } };
+    $('#flink').select();
+  };
+  const paint = async () => {
+    let list;
+    try { list = await api.listInvites(); } catch (e) { $('#inv').innerHTML = '<p class="err">Не удалось загрузить список.</p>'; return; }
+    $('#inv').innerHTML = list.map((m) => `<div class="card"><div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><b>${esc(m.name)}</b><span class="small muted">${m.has_key ? 'ссылка выдана' : 'ссылки нет'} · рецензий ${m.reviews}</span></div>
+      <div class="row wrap" style="margin-top:10px"><button class="btn" data-rot="${esc(m.author)}">Новая ссылка</button>${m.has_key ? `<button class="btn danger" data-rev="${esc(m.author)}">Отозвать</button>` : ''}${m.reviews === 0 ? `<button class="btn danger" data-delm="${esc(m.author)}">Удалить</button>` : ''}</div></div>`).join('');
+    $('#inv').querySelectorAll('[data-rot]').forEach((b) => { b.onclick = () => {
+      const m = list.find((x) => x.author === b.dataset.rot);
+      if (m.has_key && !confirm(`Старая ссылка ${m.name} перестанет работать. Выпустить новую?`)) return;
+      guard(async () => { showLink(m.name, await api.rotateInvite(m.author)); msg.textContent = ''; await paint(); }, msg);
+    }; });
+    $('#inv').querySelectorAll('[data-rev]').forEach((b) => { b.onclick = () => {
+      const m = list.find((x) => x.author === b.dataset.rev);
+      if (confirm(`Отозвать доступ у ${m.name}? Рецензии останутся.`)) guard(async () => { await api.revokeInvite(m.author); await paint(); }, msg);
+    }; });
+  };
+  $('#inv').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-delm]'); if (!b) return;
+    const m = b.closest('.card').querySelector('b').textContent;
+    if (confirm(`Удалить ${m} из списка? У этого человека нет рецензий.`)) guard(async () => { await api.deleteInvite(b.dataset.delm); await paint(); }, msg);
+  });
+  $('#mk').onclick = () => {
+    const name = $('#iname').value.trim();
+    if (!name) { msg.style.color = ''; msg.textContent = 'Введите имя.'; return; }
+    guard(async () => { const r = await api.createInvite(name); $('#iname').value = ''; msg.textContent = ''; showLink(name, r.key); await paint(); }, msg);
+  };
+  paint();
 }
 
 // ---------- админ: правка места ----------

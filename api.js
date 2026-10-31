@@ -1,5 +1,5 @@
 // Связь с базой. Две реализации с одним набором методов: live (Supabase) и demo (выдуманные примеры в localStorage).
-// Роль (админ или участник) определяет сервер по ключу; код профиля (author) отправляется с каждым запросом.
+// Роль (админ или участник) и автор определяет сервер по личному ключу; p_author браузера сервер игнорирует (оставлен для совместимости).
 import { CONFIG } from './config.js';
 
 export const isDemo = !CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_ANON_KEY;
@@ -39,6 +39,11 @@ const live = (getCode, getAuthor) => {
     addPhoto: (place_id, b64) => call('add_photo', { p_place_id: place_id, p_data: b64 }),
     getPhotos: (place_id) => call('get_photos', { p_place_id: place_id }),
     deletePhoto: (id) => call('delete_photo', { p_id: id }),
+    listInvites: () => call('list_invites', {}),
+    createInvite: (name) => call('create_invite', { p_name: name }),
+    rotateInvite: (member) => call('rotate_invite', { p_member: member }),
+    revokeInvite: (member) => call('revoke_invite', { p_member: member }),
+    deleteInvite: (member) => call('delete_invite', { p_member: member }),
   };
 };
 
@@ -75,6 +80,8 @@ const demo = (getCode, getAuthor) => {
   const role = () => (getCode() === 'admin' ? 'admin' : 'user');
   const photos = []; // в демо фото живут только до перезагрузки страницы (чтобы не переполнить хранилище)
   let nextPhoto = 1;
+  let nextMember = 1;
+  const invites = [{ author: 'demo-a', name: 'Аня', has_key: true, created_at: '2026-01-01' }, { author: 'demo-b', name: 'Борис', has_key: false, created_at: '2026-01-02' }];
   const forbid = () => { throw new ApiError('forbidden'); };
   return {
     getAll: async () => {
@@ -121,6 +128,16 @@ const demo = (getCode, getAuthor) => {
       if (role() !== 'admin' && (!r || r.author !== getAuthor())) forbid();
       photos.splice(i, 1);
     },
+    // приглашения в демо живут до перезагрузки страницы
+    listInvites: async () => { if (role() !== 'admin') forbid(); return structuredClone(invites.map((m) => ({ ...m, reviews: mem.reviews.filter((r) => r.author === m.author).length }))); },
+    createInvite: async (name) => {
+      if (role() !== 'admin') forbid();
+      const m = { author: `demo-${nextMember++}`, name, has_key: true, created_at: new Date().toISOString() }; invites.push(m);
+      return { author: m.author, key: `demo${Math.random().toString(16).slice(2).padEnd(30, '0')}` };
+    },
+    rotateInvite: async (member) => { if (role() !== 'admin') forbid(); invites.find((m) => m.author === member).has_key = true; return `demo${Math.random().toString(16).slice(2).padEnd(30, '0')}`; },
+    revokeInvite: async (member) => { if (role() !== 'admin') forbid(); invites.find((m) => m.author === member).has_key = false; },
+    deleteInvite: async (member) => { if (role() !== 'admin') forbid(); const i = invites.findIndex((m) => m.author === member); if (i >= 0) invites.splice(i, 1); },
     deletePlace: async (id) => {
       if (mem.reviews.some((x) => x.place_id === id)) throw new ApiError('rejected', 'place_has_reviews');
       mem.places = mem.places.filter((p) => p.id !== id); commit();
