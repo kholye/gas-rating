@@ -272,8 +272,8 @@ function viewList() {
     xs = sortSummaries(xs, LST.sort);
     $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => s.stars === 3 ? `<button class="item top" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="ph" data-pid="${s.place.id}"></div><div class="shade"></div>
-      <div class="top3"><div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ЕХАТЬ СПЕЦИАЛЬНО</span></div><div class="sc">${fmt(s.score)}</div></div>
-      <div class="bot"><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div></button>` : `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
+      <div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ЕХАТЬ СПЕЦИАЛЬНО</span></div>
+      <div class="bot"><div class="txt"><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div><div class="sc">${fmt(s.score)}</div></div></button>` : `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
       <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`).join('')
