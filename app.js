@@ -1,5 +1,5 @@
 import {
-  SCALES, summarize, slotPool, searchSummaries, sortSummaries, findDuplicates,
+  SCALES, summarize, RATED_SORTS, slotPool, searchSummaries, sortSummaries, findDuplicates,
   distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin,
 } from './logic.js';
 import { makeApi, isDemo, ApiError } from './api.js';
@@ -57,6 +57,7 @@ const themeIcon = () => ico({ light: 'sun', dark: 'moon' }[ls.get('gas_theme')] 
 
 // ---------- общие куски разметки ----------
 const scoreClass = (x) => (x == null ? '' : x >= 6.5 ? 'b2' : x >= 5 ? 'b1' : 'b0');
+const thinTag = (s) => `<span class="thin-tag">${s.count ? 'МАЛО ДАННЫХ' : 'НЕТ ОЦЕНОК'}</span>`;
 const STAR = '<path d="M12 2.5l2.9 6.2 6.8.8-5 4.7 1.3 6.7L12 17.5l-6 3.4 1.3-6.7-5-4.7 6.8-.8z"/>';
 const stars = (n) => (n == null ? '<span class="badge">—</span>'
   : `<span class="badge b${n}" role="img" aria-label="${n} из 3">${[0, 1, 2].map((i) => `<svg class="${i < n ? 'on' : 'off'}" viewBox="0 0 24 24" aria-hidden="true">${STAR}</svg>`).join('')}</span>`);
@@ -96,6 +97,7 @@ async function refresh() {
     return false;
   }
 }
+const placeBadge = (s) => (isThin(s) ? thinTag(s) : stars(s.stars)); // у места с малым числом рецензий звёзд нет
 const sumById = (id) => S.sums.find((s) => s.place.id === id);
 
 // ---------- навигация (адрес не меняем: в нём может быть код) ----------
@@ -311,15 +313,26 @@ function viewList() {
       <select id="min" aria-label="Минимум звёзд">${[['0', 'Любые'], ['1', '1+ звезда'], ['2', '2+ звезды'], ['3', '3 звезды']].map(([v, n]) => `<option value="${v}" ${LST.min === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
     <div id="items"></div>`;
   const paint = () => {
-    let xs = searchSummaries(S.sums, LST.q).filter((s) => (s.stars ?? -1) >= Number(LST.min));
+    // мало данных: звёзды не показываются, при фильтре по звёздам такие места не берём
+    let xs = searchSummaries(S.sums, LST.q).filter((s) => Number(LST.min) === 0 || (!isThin(s) && (s.stars ?? -1) >= Number(LST.min)));
     xs = sortSummaries(xs, LST.sort);
-    $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => s.stars === 3 && !isThin(s) ? `<button class="item top" data-act="go" data-view="detail" data-id="${s.place.id}">
+    const split = RATED_SORTS.has(LST.sort); let dividerDone = false;
+    const card = (s) => s.stars === 3 && !isThin(s) ? `<button class="item top" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="ph" data-pid="${s.place.id}"></div><div class="shade"></div>
       <div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ЕХАТЬ СПЕЦИАЛЬНО</span></div>
-      <div class="bot"><div class="txt"><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div><div class="sc">${fmt(s.score)}</div></div></button>` : `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
+      <div class="bot"><div class="txt"><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div><div class="sc">${fmt(s.score)}</div></div></button>`
+      : isThin(s) ? `<button class="item thin" data-act="go" data-view="detail" data-id="${s.place.id}">
+      <div class="t"><span>${esc(s.place.name)}</span>${placeBadge(s)}</div>
+      <div class="meta">${esc(s.place.address)}</div>
+      <div class="chips"><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">оценок ${s.count}</span></div></button>`
+      : `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
-      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${isThin(s) ? '<span class="chip warn">мало данных</span>' : ''}${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`).join('')
+      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`;
+    $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => {
+      const div = split && isThin(s) && !dividerDone && (dividerDone = true) ? '<div class="divider"><span>МАЛО ДАННЫХ · ЖДУТ ВТОРОЙ РЕЦЕНЗИИ</span></div>' : '';
+      return div + card(s);
+    }).join('')
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
     $app.querySelectorAll('.item.top .ph').forEach(paintBannerPhoto);
   };
@@ -338,9 +351,9 @@ function viewDetail() {
   const vs = s.reviews.map((r) => r.verdict);
   $app.innerHTML = `${bar('')}
     <div class="ph-head"><div class="grow"><div class="label">${esc(p.kind || 'место')}</div><h1>${esc(p.name)}</h1><div class="muted small" style="margin-top:8px">${esc(p.address)}</div></div>
-      ${s.score == null ? '' : `<div style="text-align:right;flex:none"><div class="big ${scoreClass(s.score)}">${fmt(s.score)}<small>/10</small></div><div style="margin-top:6px">${stars(s.stars)}</div></div>`}</div>
+      ${s.score == null ? '' : isThin(s) ? `<div style="text-align:right;flex:none">${thinTag(s)}</div>` : `<div style="text-align:right;flex:none"><div class="big ${scoreClass(s.score)}">${fmt(s.score)}<small>/10</small></div><div style="margin-top:6px">${stars(s.stars)}</div></div>`}</div>
     ${s.count ? barsHtml(s.scores) : '<p class="muted">Пока нет рецензий.</p>'}
-    ${s.count && isThin(s) ? `<div class="notice soft">${ico('info')}<span>Пока одна рецензия: оценка предварительная, в слот-машину место попадёт после второй.</span></div>` : ''}
+    ${s.count && isThin(s) ? `<div class="notice soft">${ico('info')}<span>Пока одна рецензия: звёзды и итог появятся после второй, а в слот-машину место попадёт после неё.</span></div>` : ''}
     <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: примерно поровну качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота) и звёзды. Доступность и туалет показываются отдельно и в итог не входят. Строгость авторов слегка выравнивается, а к каждому месту подмешивается среднее по группе (как две лишние рецензии), чтобы одна оценка не решала всё. Звёзды места — медиана вердиктов; при ничьей берётся меньшее, а «ехать специально» не выдаётся, если кто-то поставил 0. Меньше двух рецензий — «мало данных»: такое место не попадает в слот-машину.</p></details>
     ${d?.kind === 'quality' ? `<div class="notice">${ico('warn')}<span>Мнения о качестве расходятся${d.scales.length ? `: сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : d?.kind === 'trip' ? `<div class="notice soft">${ico('info')}<span>Качество оценили похоже, но по-разному решили, стоит ли ехать специально (вердикты от ${Math.min(...vs)} до ${Math.max(...vs)}). Это не спор: у каждого своя мера «поехать специально».</span></div>` : ''}
     <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
@@ -411,9 +424,9 @@ function viewMap() {
   S.map = L.map('map').setView(SPB, 11); tiles().addTo(S.map);
   const pts = [];
   S.sums.forEach((s) => {
-    const icon = L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pin"><span>${s.stars ?? '?'}</span></div>` });
+    const icon = L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pin"><span>${isThin(s) ? '?' : s.stars}</span></div>` });
     const box = document.createElement('div');
-    box.innerHTML = `<b>${esc(s.place.name)}</b><br>${stars(s.stars)} · итог ${fmt(s.score)}<br><span class="small">вкус ${fmt(s.scores.taste)} · оценок ${s.count}</span><br><a href="#">Подробнее</a>`;
+    box.innerHTML = `<b>${esc(s.place.name)}</b><br>${isThin(s) ? `${thinTag(s)}<br><span class="small">оценок ${s.count}</span>` : `${stars(s.stars)} · итог ${fmt(s.score)}<br><span class="small">вкус ${fmt(s.scores.taste)} · оценок ${s.count}</span>`}<br><a href="#">Подробнее</a>`;
     box.querySelector('a').onclick = (e) => { e.preventDefault(); go('detail', { id: s.place.id }); };
     L.marker([s.place.lat, s.place.lon], { icon }).addTo(S.map).bindPopup(box);
     pts.push([s.place.lat, s.place.lon]);

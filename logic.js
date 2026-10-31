@@ -118,7 +118,14 @@ const SORTS = {
   name: (a, b) => a.place.name.localeCompare(b.place.name, 'ru'),
   new: (a, b) => String(b.place.created_at).localeCompare(String(a.place.created_at)),
 };
-export const sortSummaries = (list, by) => [...list].sort(SORTS[by] ?? SORTS.score);
+// Сортировки по оценкам (лучшие, звёзды, вкус) ставят места с малым числом рецензий после остальных: они не попадают в топ.
+export const RATED_SORTS = new Set(['score', 'stars', 'taste']);
+export function sortSummaries(list, by) {
+  const key = SORTS[by] ? by : 'score';
+  const cmp = SORTS[key];
+  if (!RATED_SORTS.has(key)) return [...list].sort(cmp);
+  return [...list].sort((a, b) => (isThin(a) - isThin(b)) || cmp(a, b));
+}
 
 // Похожие заведения: то же название (без регистра) или точка в пределах 100 м.
 export function findDuplicates(places, { name, lat, lon }) {
