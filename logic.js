@@ -143,6 +143,20 @@ export function mapsLink(lat, lon, name = '', ios = false) {
   return `geo:${lat},${lon}?q=${lat},${lon}(${encodeURIComponent(name)})`;
 }
 
+// «Поделиться» местом: текст для чата. Ссылка на сайт без личного ключа (#p=номер места), получатель входит своим ключом;
+// адрес и ссылка на Яндекс Карты полезны и тем, у кого доступа к сайту нет.
+const VERDICT_WORDS = ['не моё', 'хорошо, если окажусь рядом', 'стоит заехать', 'ехать специально'];
+export const placeLink = (siteUrl, id) => `${siteUrl}#p=${id}`;
+export function shareText(summary, siteUrl) {
+  const p = summary.place;
+  const fmt = (x) => x.toFixed(1).replace('.', ',');
+  const verdict = summary.count < RATING.minReviews ? (summary.count ? 'пока одна оценка' : 'пока без оценок')
+    : `${'★'.repeat(summary.stars)}${'☆'.repeat(3 - summary.stars)} ${VERDICT_WORDS[summary.stars]}, итог ${fmt(summary.score)}/10`;
+  return [`${p.name} — ${verdict}`, p.address, `Карта: https://yandex.ru/maps/?pt=${p.lon},${p.lat}&z=17&l=map`, `G.A.S. Rating: ${placeLink(siteUrl, p.id)}`].join('\n');
+}
+// Ссылка на место из адреса: #p=номер (может стоять рядом с #k=...).
+export const readPlace = (hash) => { const m = /(?:^#|&)p=(\d+)/.exec(hash || ''); return m ? Number(m[1]) : null; };
+
 // Секретный код: из #k=... в адресе, иначе из сохранённого. Возвращает { code, fromUrl }.
 export function readCode(hash, stored) {
   const m = /(?:^#|&)k=([^&]+)/.exec(hash || '');

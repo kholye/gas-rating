@@ -1,11 +1,15 @@
 import {
   SCALES, summarize, RATED_SORTS, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace,
 } from './logic.js';
 import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
 
-const $app = document.getElementById('app');
+// $root — весь сайт; $app — куда сейчас рисует экран (на компьютере это одна из колонок, после отрисовки снова $root).
+const $root = document.getElementById('app');
+let $app = $root;
+// ПК-версия: от 1024 px слева постоянная панель, список и карта (или карточка места) рядом.
+const DESK = matchMedia('(min-width: 1024px)');
 const ls = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* без хранилища всё работает до перезагрузки */ } },
@@ -29,8 +33,9 @@ const S = { code: null, seed: loadSeed(), online: null, flash: '', author: AUTHO
 // ---------- секретный код: из #k=… в адресе, затем адрес очищается ----------
 {
   const { code, fromUrl } = readCode(location.hash, ls.get('gas_code'));
-  S.code = code;
-  if (fromUrl) { ls.set('gas_code', code); history.replaceState(null, '', location.pathname + location.search); }
+  S.code = code; S.deepPlace = readPlace(location.hash); // ссылка на место из «Поделиться»
+  if (fromUrl) ls.set('gas_code', code);
+  if (fromUrl || S.deepPlace != null) history.replaceState(null, '', location.pathname + location.search);
 }
 const api = makeApi(() => S.code, () => S.author);
 
@@ -54,6 +59,10 @@ const ICON = {
   warn: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+  share: '<path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
+  slot: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M9 5v14M15 5v14"/>',
+  list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
+  map: '<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14M15 6v14"/>',
 };
 const ico = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 const themeIcon = () => ico({ light: 'sun', dark: 'moon' }[ls.get('gas_theme')] ?? 'auto');
@@ -126,6 +135,12 @@ function syncAvatar() {
   });
 }
 window.addEventListener('online', syncAvatar);
+// Открыть место по ссылке #p=…, как только оно есть в данных (один раз).
+function openDeep() {
+  if (S.deepPlace == null || S.gate || !S.data) return false;
+  const id = S.deepPlace; if (!sumById(id)) return false;
+  S.deepPlace = null; go('detail', { id }); return true;
+}
 const placeBadge = (s) => (isThin(s) ? thinTag(s) : stars(s.stars)); // у места с малым числом рецензий звёзд нет
 const sumById = (id) => S.sums.find((s) => s.place.id === id);
 
@@ -140,7 +155,7 @@ function go(view, p = {}, replace = false) {
 window.addEventListener('popstate', (e) => { cur = e.state || { view: 'menu', p: {}, d: 0 }; render(); });
 history.replaceState(cur, '');
 
-$app.addEventListener('click', (e) => {
+$root.addEventListener('click', (e) => {
   const t = e.target.closest('[data-act]'); if (!t) return;
   if (t.tagName === 'A') e.preventDefault();
   const a = t.dataset.act;
@@ -163,14 +178,49 @@ async function guard(fn, msgEl) {
 function render() {
   if (S.map) { S.map.remove(); S.map = null; }
   if (S.pick) { S.pick.remove(); S.pick = null; }
+  if (S.keyFn) { document.removeEventListener('keydown', S.keyFn); S.keyFn = null; }
+  $app = $root; document.body.classList.remove('desk');
   if (S.gate) return viewGate();
   if (S.err) return viewError();
   if (!S.data) return viewLoading();
-  ({ menu: viewMenu, list: viewList, detail: viewDetail, map: viewMap, slot: viewSlot, rate: viewRate, me: viewMe, invites: viewInvites, editplace: viewEditPlace, net: viewNet }[cur.view] || viewMenu)();
-  if (S.flash) { $app.querySelector('header')?.insertAdjacentHTML('afterend', `<div class="notice soft">${ico('info')}<span>${esc(S.flash)} <a href="#" id="flash-retry">Обновить</a></span></div>`); S.flash = '';
-    const fr = $app.querySelector('#flash-retry'); if (fr) fr.onclick = async (e) => { e.preventDefault(); fr.textContent = 'обновляю…'; await refreshAfterWrite('Связь всё ещё плохая. Попробуйте позже.'); render(); }; }
+  if (DESK.matches) renderDesk(); else (VIEWS[cur.view] || viewMenu)();
+  if (S.flash) { ($root.querySelector('.dk-b header') || $root.querySelector('header'))?.insertAdjacentHTML('afterend', `<div class="notice soft">${ico('info')}<span>${esc(S.flash)} <a href="#" id="flash-retry">Обновить</a></span></div>`); S.flash = '';
+    const fr = $root.querySelector('#flash-retry'); if (fr) fr.onclick = async (e) => { e.preventDefault(); fr.textContent = 'обновляю…'; await refreshAfterWrite('Связь всё ещё плохая. Попробуйте позже.'); render(); }; }
 }
 // Загрузка: если база долго молчит, честно говорим об этом (запрос сам оборвётся по таймауту и покажет «Повторить»).
+const VIEWS = { menu: () => viewMenu(), list: () => viewList(), detail: () => viewDetail(), map: () => viewMap(), slot: () => viewSlot(), rate: () => viewRate(), me: () => viewMe(), invites: () => viewInvites(), editplace: () => viewEditPlace(), net: () => viewNet() };
+DESK.addEventListener('change', () => { if (S.data && !S.gate && !S.err) render(); });
+
+// ---------- ПК-версия: панель слева и одна или две рабочие колонки ----------
+const meName = () => (S.role === 'admin' ? (S.name || 'Админ') : S.name && !S.anon ? S.name : 'Аноним');
+const netStatus = () => (isDemo ? 'демо' : S.online === false ? 'нет связи · показаны сохранённые данные'
+  : S.online ? `база на связи${routes().length > 1 && currentRoute() === 'proxy' ? ' · через Яндекс' : ''}` : 'обновляю…');
+function railHtml(v) {
+  const rated = S.sums.filter((x) => x.count).length;
+  const nav = (key, label, icon, on, extra = '') => `<button class="r-nav${on ? ' on' : ''}" data-act="go" data-view="${key}">${ico(icon)}<span>${label}</span>${extra}</button>`;
+  return `<div class="r-brand"><b>G.A.S.</b><span>RATING</span></div>
+    <button class="r-me" data-act="go" data-view="me" aria-label="Открыть профиль"><span class="me-tile">${avatarSvg(S.seed, { size: 40, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg() : ''}</span>
+      <span class="grow"><b>${esc(meName())}</b><small>${S.role === 'admin' ? 'админ' : 'участник'} · профиль</small></span></button>
+    <button class="r-cta${v === 'slot' ? ' on' : ''}" data-act="go" data-view="slot">${ico('slot')}<span>Выбрать место</span></button>
+    <nav class="r-list">${nav('list', 'Все оценённые', 'list', v === 'list' || v === 'detail', `<small>${rated}</small>`)}${nav('map', 'Карта', 'map', v === 'map')}${nav('rate', 'Оценить заведение', 'plus', v === 'rate')}</nav>
+    ${isDemo ? '<div class="notice">Демо-режим: выдуманные примеры.</div>' : ''}
+    <div class="r-foot"><button class="r-nav" data-act="theme">${themeIcon()}<span>Сменить тему</span></button>
+      <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${netStatus()}</span></div></div>`;
+}
+function renderDesk() {
+  const v = cur.view === 'menu' ? 'list' : cur.view;
+  const two = v === 'list' || v === 'detail' || v === 'map';
+  const oldA = $root.querySelector('.dk.two .dk-a'); const keep = two && oldA ? oldA.scrollTop : 0; // список не прыгает наверх при выборе места
+  document.body.classList.add('desk');
+  $root.innerHTML = `<div class="dk ${two ? 'two' : 'one'} v-${v}"><aside class="rail">${railHtml(v)}</aside><main class="dk-a"></main>${two ? '<section class="dk-b"></section>' : ''}</div>`;
+  const A = $root.querySelector('.dk-a'); const B = $root.querySelector('.dk-b');
+  try {
+    if (two) { $app = A; viewList(); $app = B; if (v === 'detail') viewDetail(); else viewMapPane(); }
+    else { $app = A; (VIEWS[v] || viewList)(); }
+  } finally { $app = $root; }
+  if (keep && A.isConnected) A.scrollTop = keep;
+}
+
 const viewLoading = () => {
   $app.innerHTML = `${bar('G.A.S. Rating', false)}<p class="muted" id="loading">Загружаю…</p>`;
   clearTimeout(S.slowT); S.slowT = setTimeout(() => { const el = document.getElementById('loading'); if (el) el.textContent = 'Загружаю… База отвечает медленно: подождите немного, при обрыве появится кнопка «Повторить».'; }, 6000);
@@ -194,7 +244,7 @@ function viewGate() {
     const code = parsePastedLink($app.querySelector('#paste').value);
     if (!code) return;
     S.code = code; ls.set('gas_code', code); S.gate = null; viewLoading();
-    await refresh(); render();
+    await refresh(); render(); openDeep();
   };
 }
 
@@ -393,15 +443,16 @@ function viewList() {
     let xs = searchSummaries(S.sums, LST.q).filter((s) => Number(LST.min) === 0 || (!isThin(s) && (s.stars ?? -1) >= Number(LST.min)));
     xs = sortSummaries(xs, LST.sort);
     const split = RATED_SORTS.has(LST.sort); let dividerDone = false;
-    const card = (s) => s.stars === 3 && !isThin(s) ? `<button class="item top" data-act="go" data-view="detail" data-id="${s.place.id}">
+    const sel = (s) => (cur.view === 'detail' && cur.p.id === s.place.id ? ' sel' : '');
+    const card = (s) => s.stars === 3 && !isThin(s) ? `<button class="item top${sel(s)}" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="ph" data-pid="${s.place.id}"></div><div class="shade"></div>
       <div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ЕХАТЬ СПЕЦИАЛЬНО</span></div>
       <div class="bot"><div class="txt"><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div><div class="sc">${fmt(s.score)}</div></div></button>`
-      : isThin(s) ? `<button class="item thin" data-act="go" data-view="detail" data-id="${s.place.id}">
+      : isThin(s) ? `<button class="item thin${sel(s)}" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${placeBadge(s)}</div>
       <div class="meta">${esc(s.place.address)}</div>
       <div class="chips"><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">оценок ${s.count}</span></div></button>`
-      : `<button class="item" data-act="go" data-view="detail" data-id="${s.place.id}">
+      : `<button class="item${sel(s)}" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
       <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`;
@@ -433,17 +484,34 @@ function viewDetail() {
     <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: примерно поровну качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота) и звёзды. Доступность и туалет показываются отдельно и в итог не входят. Строгость авторов слегка выравнивается, а к каждому месту подмешивается среднее по группе (как две лишние рецензии), чтобы одна оценка не решала всё. Звёзды места — медиана вердиктов; при ничьей берётся меньшее, а «ехать специально» не выдаётся, если кто-то поставил 0. Меньше двух рецензий — «мало данных»: такое место не попадает в слот-машину.</p></details>
     ${d?.kind === 'quality' ? `<div class="notice">${ico('warn')}<span>Мнения о качестве расходятся${d.scales.length ? `: сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : d?.kind === 'trip' ? `<div class="notice soft">${ico('info')}<span>Качество оценили похоже, но по-разному решили, стоит ли ехать специально (вердикты от ${Math.min(...vs)} до ${Math.max(...vs)}). Это не спор: у каждого своя мера «поехать специально».</span></div>` : ''}
     <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
+      <button class="btn icon-only" id="share" aria-label="Поделиться местом" title="Поделиться">${ico('share')}</button>
       <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою' : 'Оценить'}</button></div>
     ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="small muted" id="phnote" style="margin-top:6px">Загружаю фото…</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
     <div class="err" id="msg"></div>
     <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${admin ? `<button class="btn" data-act="go" data-view="editplace" data-id="${p.id}">Изменить место</button>` : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
   const msg = $app.querySelector('#msg');
+  $app.querySelector('#share').onclick = () => sharePlace(s, msg);
   const del = $app.querySelector('#delrev');
   if (del) del.onclick = () => confirm('Удалить вашу рецензию?') && guard(async () => { del.disabled = true; del.textContent = 'Удаляю…'; await api.deleteReview(mine.id); await refreshAfterWrite('Рецензия удалена, но список ещё не обновился: связь плохая.'); go('detail', { id: p.id }, true); }, msg).finally(() => { if (del.isConnected) { del.disabled = false; del.textContent = 'Удалить мою рецензию'; } });
   const dp = $app.querySelector('#delplace');
   if (dp) dp.onclick = () => confirm('Удалить заведение?') && guard(async () => { await api.deletePlace(p.id); await refreshAfterWrite('Заведение удалено, но список ещё не обновился: связь плохая.'); go('list', {}, true); }, msg);
   $app.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => confirm('Удалить эту рецензию?') && guard(async () => { b.disabled = true; await api.deleteReview(Number(b.dataset.del)); await refreshAfterWrite('Рецензия удалена, но список ещё не обновился: связь плохая.'); go('detail', { id: p.id }, true); }, msg).finally(() => { b.disabled = false; }); });
   if (s.count) loadPhotos(p.id);
+}
+
+// «Поделиться»: на телефоне — системное меню (Telegram, WhatsApp…), на компьютере — копия текста в буфер.
+async function sharePlace(s, msg) {
+  const site = location.origin + location.pathname; // без #k=: личный ключ никогда не уходит в ссылку
+  const text = shareText(s, site);
+  const touch = matchMedia('(pointer: coarse)').matches;
+  if (touch && navigator.share) {
+    try { await navigator.share({ title: s.place.name, text }); return; } catch (e) { if (e?.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(text); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано: название, оценка, адрес и ссылки. Вставьте в чат.'; }
+  catch {
+    msg.style.color = ''; msg.innerHTML = '<textarea readonly id="sharetxt" style="min-height:120px"></textarea><span class="small muted">Скопируйте текст вручную.</span>';
+    const ta = msg.querySelector('#sharetxt'); ta.value = text; ta.select();
+  }
 }
 
 // ---------- фото ----------
@@ -513,6 +581,14 @@ const tiles = () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 function viewMap() {
   $app.innerHTML = `${bar('Карта')}<div id="map"></div>`;
   if (!needLeaflet()) return;
+  mountMainMap();
+}
+function viewMapPane() {
+  $app.innerHTML = '<div id="map" class="map-pane"></div>';
+  if (!needLeaflet()) return;
+  mountMainMap(); setTimeout(() => S.map?.invalidateSize(), 60);
+}
+function mountMainMap() {
   S.map = L.map('map').setView(SPB, 11); tiles().addTo(S.map);
   const pts = [];
   S.sums.forEach((s) => {
@@ -594,7 +670,8 @@ function viewRate() {
     <button class="btn accent block" id="send" style="margin-top:14px">Отправить</button></form>`;
 
   const f = $app.querySelector('#f'); const msg = f.querySelector('#msg');
-  const redraw = () => { const y = window.scrollY; viewRate(); window.scrollTo(0, y); };
+  const host = $app; // на ПК форма живёт в колонке: перерисовываем именно её
+  const redraw = () => { const y = window.scrollY; const sc = host.scrollTop; const prev = $app; $app = host; try { viewRate(); } finally { $app = prev; } window.scrollTo(0, y); host.scrollTop = sc; };
   f.addEventListener('change', async (e) => {
     const { name, value } = e.target;
     if (e.target.id === 'ph') {
@@ -699,6 +776,7 @@ function viewSlot() {
     <div class="machine" id="machine">
       <div class="reels" aria-hidden="true"><div class="band"></div>${[0, 1, 2].map((i) => `<div class="reel" id="reel${i}"><div class="strip"><div class="cell"></div><div class="cell idle">${'GAS'[i]}</div><div class="cell"></div></div></div>`).join('')}</div>
       <div class="handle" id="handle" role="group" aria-label="Ручка слот-машины"><span class="hint">ПОТЯНИ</span><button type="button" class="knob" id="knob" aria-label="Дёрнуть ручку">${ico('arrow')}</button></div>
+      <div class="small muted dk-only" style="margin-top:10px;text-align:center">Пробел — крутить</div>
     </div>
     <div id="out" aria-live="polite"></div>`;
   const $ = (s) => $app.querySelector(s);
@@ -742,6 +820,10 @@ function viewSlot() {
   };
   $('#rig').onchange = (e) => { T.rig = e.target.checked; ls.set('gas_rig', T.rig ? '1' : '0'); };
   paintStatus(); locate();
+  if (DESK.matches) {
+    S.keyFn = (e) => { if (e.code !== 'Space' || /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(document.activeElement?.tagName || '')) return; e.preventDefault(); pull(); };
+    document.addEventListener('keydown', S.keyFn);
+  }
 
   // ---- ручка: тянется пальцем вправо или нажимается ----
   let drag = null;
@@ -824,12 +906,13 @@ function viewSlot() {
 (async () => {
   window.__gasBoot = true; // сайт загрузился (см. страховку в index.html)
   const cached = !isDemo && S.code ? readCache() : null;
-  if (cached) { build(cached); S.gate = null; render(); } else viewLoading();
+  if (cached) { build(cached); S.gate = null; render(); openDeep(); } else viewLoading();
   const before = cached ? JSON.stringify(cached) : null;
   const ok = await refresh();
   clearTimeout(S.slowT);
   if (ok) syncAvatar(); // неподтверждённый выбор кубиком отправляем снова
-  if (!cached) return render();
+  if (!cached) { render(); openDeep(); return; }
+  if (openDeep()) return;
   if (!ok) { if (S.gate) return render(); S.err = null; if (cur.view === 'menu') render(); return; } // нет связи: остаёмся на данных из кэша
   // свежие данные: перерисовываем только безопасные экраны (не форму оценки)
   if ((JSON.stringify(S.data) !== before && (cur.view === 'menu' || cur.view === 'list')) || cur.view === 'menu') render();

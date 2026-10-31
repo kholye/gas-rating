@@ -149,6 +149,8 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .divider{display:flex;align-items:center;gap:10px;margin:14px 0 12px;font:500 11px var(--mono);letter-spacing:.12em;color:var(--mut)}
 .divider::after{content:"";flex:1;height:1px;background:var(--ln)}
 .lb-load{position:absolute;left:0;right:0;bottom:24px;text-align:center;font:500 12px var(--mono);color:#fff;text-shadow:0 1px 6px #000}
+.btn.icon-only{flex:none;width:48px;padding:0;justify-content:center}
+.btn.icon-only svg.i{width:20px;height:20px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .chip{font:500 11px var(--mono);letter-spacing:.04em;text-transform:uppercase;padding:4px 8px;border-radius:8px;border:1px solid var(--ln);color:var(--mut)}
 .chip.warn{border-color:var(--vio);color:var(--vio)}
@@ -249,6 +251,49 @@ input[type=file]{width:100%;padding:12px;border:1px dashed var(--ln2);border-rad
 .result{margin-top:16px;border:1px solid var(--ln);background:var(--s1);border-radius:26px;padding:20px}
 .result h3{margin:0;font-weight:800;font-size:28px;line-height:1.05;letter-spacing:-.03em;overflow-wrap:anywhere}
 .fx{position:absolute;width:8px;height:8px;border-radius:2px;pointer-events:none;z-index:5}
+/* ---------- ПК-версия (от 1024 px): панель слева, список и карта или карточка места рядом ---------- */
+.dk-only{display:none}
+.item.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+@media (min-width:1024px){
+  body.desk{padding:0}
+  body.desk #app{max-width:none}
+  .dk{display:grid;grid-template-columns:248px minmax(360px,440px) minmax(0,1fr);height:100vh;height:100dvh}
+  .dk.one{grid-template-columns:248px minmax(0,1fr)}
+  .dk .dk-only{display:block}
+  .rail{border-right:1px solid var(--ln);padding:22px 18px;display:flex;flex-direction:column;gap:18px;overflow:auto}
+  .r-brand{display:flex;align-items:baseline;gap:8px}
+  .r-brand b{font-weight:800;font-size:22px;letter-spacing:-.03em}
+  .r-brand span{font:500 10px var(--mono);letter-spacing:.14em;color:var(--mut)}
+  .r-me{display:flex;align-items:center;gap:12px;border:0;background:none;padding:0;text-align:left}
+  .r-me .me-tile{width:52px;height:52px;border-radius:17px}
+  .r-me b{display:block;font-size:15px}
+  .r-me small{display:block;font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-top:2px}
+  .r-cta{display:flex;align-items:center;gap:10px;min-height:50px;padding:0 14px;border-radius:14px;border:0;background:var(--acc);color:var(--on-acc);font-weight:800;font-size:15px;text-align:left}
+  .r-cta span{flex:1}
+  .r-cta small{font:700 11px var(--mono)}
+  .r-cta.on{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--acc)}
+  .r-list{display:flex;flex-direction:column;gap:4px}
+  .r-nav{display:flex;align-items:center;gap:12px;min-height:44px;padding:0 12px;border-radius:12px;border:1px solid transparent;background:none;color:var(--mut);font-weight:600;font-size:14px;text-align:left;width:100%}
+  .r-nav span{flex:1}
+  .r-nav small{font:500 11px var(--mono);color:var(--dim)}
+  .r-nav:hover{color:var(--ink)}
+  .r-nav.on{background:var(--s1);border-color:var(--ln2);color:var(--ink)}
+  .r-foot{margin-top:auto;display:flex;flex-direction:column;gap:6px}
+  .r-foot .foot{margin-top:4px;font-size:11px}
+  .dk-a,.dk-b{overflow:auto;min-width:0;padding:4px 24px 32px}
+  .dk.two .dk-a{border-right:1px solid var(--ln)}
+  .dk.one .dk-a{padding:8px 40px 48px}
+  .dk.one .dk-a>*{max-width:760px}
+  .dk .bar [data-act=theme]{display:none}
+  .dk.two .dk-a .bar [data-act=back]{display:none}
+  .dk-b .map-pane{height:calc(100dvh - 40px);min-height:420px;margin:20px 0}
+  .dk.v-detail .dk-b{padding:4px 36px 40px}
+  .dk.v-slot .dk-a{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr);column-gap:32px;align-content:start;align-items:start}
+  .dk.v-slot .dk-a>*{grid-column:1;max-width:none}
+  .dk.v-slot .dk-a>header{grid-column:1/-1}
+  .dk.v-slot #out{grid-column:2;grid-row:2/span 6}
+  .dk.v-slot .reel{height:150px}
+}
 @media (prefers-reduced-motion: reduce){.foot .dot{animation:none}}
 </style>
 </head>
