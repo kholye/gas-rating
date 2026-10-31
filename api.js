@@ -28,7 +28,8 @@ export const currentRoute = () => route;
 // Чтения и повторяемые записи можно безопасно повторить, если связь оборвалась (повтор не создаст дубль).
 const RETRY = new Set(['get_all', 'get_photos', 'get_photo', 'get_covers', 'list_invites', 'save_review', 'update_avatar']);
 
-const live = (getCode, getAuthor) => {
+// trouble(fn, kind, info): сообщение для журнала ошибок, когда запрос окончательно не удался или сайт сменил путь к базе.
+const live = (getCode, getAuthor, trouble = () => {}) => {
   // timeout покрывает весь ответ, включая чтение тела: у некоторых провайдеров соединение «замирает» посреди ответа,
   // и без этого экран «Загружаю…» или фото висели бы вечно. Обрыв в любом месте = 'offline'.
   const once = async (fn, args, timeout, via) => {
@@ -53,12 +54,15 @@ const live = (getCode, getAuthor) => {
     const first = route;
     try { return await once(fn, args, timeout, first); }
     catch (e) {
-      if (!RETRY.has(fn) || (e.kind !== 'offline' && e.kind !== 'db')) throw e;
+      if (fn === 'log_error') throw e; // сбой самого журнала не записываем
+      if (!RETRY.has(fn) || (e.kind !== 'offline' && e.kind !== 'db')) { if (e.kind === 'offline' || e.kind === 'db') trouble(fn, e.kind, `путь ${first}${e.detail ? `, код ${e.detail}` : ''}`); throw e; }
       const other = ROUTES.find((r) => r !== first) ?? first;
       if (other === first) await new Promise((r) => setTimeout(r, 800));
-      const res = await once(fn, args, timeout, other);
-      if (other !== first) remember(other);
-      return res;
+      try {
+        const res = await once(fn, args, timeout, other);
+        if (other !== first) { remember(other); trouble(fn, 'route', `путь ${first} не ответил (${e.kind}), сайт перешёл на ${other}`); }
+        return res;
+      } catch (e2) { if (e2.kind === 'offline' || e2.kind === 'db') trouble(fn, e2.kind, `пути ${first} и ${other} не ответили`); throw e2; }
     }
   };
   return {
@@ -82,6 +86,9 @@ const live = (getCode, getAuthor) => {
     rotateInvite: (member) => call('rotate_invite', { p_member: member }),
     revokeInvite: (member) => call('revoke_invite', { p_member: member }),
     deleteInvite: (member) => call('delete_invite', { p_member: member }),
+    logError: (x) => call('log_error', { p_kind: x.kind, p_message: x.message, p_detail: x.detail || null, p_url: x.url || null, p_ua: x.ua || null, p_version: x.version || null }, 10000),
+    listErrors: () => call('list_errors', {}),
+    clearErrors: () => call('clear_errors', {}),
   };
 };
 
@@ -177,6 +184,9 @@ const demo = (getCode, getAuthor) => {
     },
     rotateInvite: async (member) => { if (role() !== 'admin') forbid(); invites.find((m) => m.author === member).has_key = true; return `demo${Math.random().toString(16).slice(2).padEnd(30, '0')}`; },
     revokeInvite: async (member) => { if (role() !== 'admin') forbid(); invites.find((m) => m.author === member).has_key = false; },
+    logError: async () => {},
+    listErrors: async () => { if (role() !== 'admin') forbid(); return []; },
+    clearErrors: async () => {},
     deleteInvite: async (member) => { if (role() !== 'admin') forbid(); const i = invites.findIndex((m) => m.author === member); if (i >= 0) invites.splice(i, 1); },
     deletePlace: async (id) => {
       if (mem.reviews.some((x) => x.place_id === id)) throw new ApiError('rejected', 'place_has_reviews');
@@ -199,4 +209,4 @@ export async function probe(url, init = {}, timeout = 20000) {
 export const probeRpc = (fn, body, timeout, via) => probe(rpcUrl(fn, via), { method: 'POST', headers: rpcHeaders(via), body: JSON.stringify(body) }, timeout);
 export const routes = () => [...ROUTES];
 
-export const makeApi = (getCode, getAuthor) => (isDemo ? demo(getCode, getAuthor) : live(getCode, getAuthor));
+export const makeApi = (getCode, getAuthor, trouble) => (isDemo ? demo(getCode, getAuthor) : live(getCode, getAuthor, trouble));

@@ -106,6 +106,14 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .btn.accent{background:var(--acc);color:var(--on-acc);border-color:transparent;font-weight:700}
 .btn.danger{color:var(--bad);border-color:var(--ln)}
 .btn.block{width:100%}
+.btn{gap:8px;white-space:nowrap}
+.btn svg.i{width:18px;height:18px;flex:none}
+.lbl-short{display:none}
+@media (max-width:1023px){.lbl-long{display:none}.lbl-short{display:inline}}
+.me-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:4px}
+.ver-line{display:block;margin:14px auto 0;border:0;background:none;color:var(--dim);font:500 11px var(--mono);letter-spacing:.06em;cursor:pointer}
+.ver{margin-left:auto;border:1px solid var(--ln);background:none;color:var(--dim);font:500 11px var(--mono);border-radius:8px;padding:3px 8px;cursor:pointer}
+.errc pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 var(--mono);color:var(--mut);background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:10px;margin:8px 0;max-height:220px;overflow:auto}
 .btn[disabled]{opacity:.5;cursor:default}
 .notice{border-radius:16px;padding:12px 14px;border:1px solid var(--vio);background:var(--vio-soft);font-size:14px;margin:12px 0;display:flex;gap:10px;align-items:flex-start}
 .notice svg.i{width:18px;height:18px;flex:none;margin-top:2px;color:var(--vio)}
@@ -301,13 +309,18 @@ input[type=file]{width:100%;padding:12px;border:1px dashed var(--ln2);border-rad
   .r-nav.on{background:var(--s1);border-color:var(--ln2);color:var(--ink)}
   .r-foot{margin-top:auto;display:flex;flex-direction:column;gap:6px}
   .r-foot .foot{margin-top:4px;font-size:11px}
+  .r-ver{border:0;background:none;padding:2px 0 0 18px;text-align:left;color:var(--dim);font:500 10px var(--mono);letter-spacing:.06em;cursor:pointer}
+  .r-ver:hover{color:var(--mut)}
+  .dk .thumbs{grid-template-columns:repeat(auto-fill,minmax(140px,180px))}
+  .dk .thumbs .thumb:only-child{grid-column:auto}
   .dk-a,.dk-b{overflow:auto;min-width:0;padding:4px 24px 32px}
   .dk.two .dk-a{border-right:1px solid var(--ln)}
   .dk.one .dk-a{padding:8px 40px 48px}
   .dk.one .dk-a>*{max-width:760px}
   .dk .bar [data-act=theme]{display:none}
   .dk.two .dk-a .bar [data-act=back]{display:none}
-  .dk-b #map.map-pane{height:calc(100vh - 40px);height:calc(100dvh - 40px);min-height:420px;margin:20px 0}
+  .dk.two:not(.v-detail) .dk-b{display:flex;flex-direction:column;padding-bottom:0}
+  .dk-b #map.map-pane{flex:1;height:auto;min-height:420px;margin:20px 0}
   .dk.v-detail .dk-b{padding:4px 36px 40px}
   .dk.v-slot .dk-a>*{max-width:1100px}
   .dk.v-slot header.bar{min-height:96px}

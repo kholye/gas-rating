@@ -4,6 +4,7 @@ import {
 } from './logic.js';
 import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
+import { VERSION, CHANGELOG } from './version.js';
 
 // $root — весь сайт; $app — куда сейчас рисует экран (на компьютере это одна из колонок, после отрисовки снова $root).
 const $root = document.getElementById('app');
@@ -37,7 +38,36 @@ const S = { code: null, seed: loadSeed(), online: null, flash: '', author: AUTHO
   if (fromUrl) ls.set('gas_code', code);
   if (fromUrl || S.deepPlace != null) history.replaceState(null, '', location.pathname + location.search);
 }
-const api = makeApi(() => S.code, () => S.author);
+const api = makeApi(() => S.code, () => S.author, (fn, kind, info) => report(kind === 'route' ? 'route' : 'network', `${fn}: ${kind === 'route' ? 'смена пути' : kind === 'db' ? 'база не ответила' : 'обрыв связи'}`, info));
+
+// ---------- журнал ошибок: сбои сами уходят админу (вкладка «Ошибки»), от людей ничего не нужно ----------
+const ERRQ = 'gas_errq';
+const viewName = () => { try { return cur.view; } catch { return 'запуск'; } }; // cur объявлен ниже
+const errSeen = new Set(); let errSent = 0;
+function report(kind, message, detail = '') {
+  if (isDemo) return;
+  const key = `${kind}|${message}`; if (errSeen.has(key) || errSent >= 15) return; // без повторов и не больше 15 за визит
+  errSeen.add(key); errSent++;
+  const item = { kind, message: String(message || '').slice(0, 600), detail: `${String(detail || '').slice(0, 3800)}\nэкран: ${viewName()} · время на устройстве: ${new Date().toLocaleString('ru')}`,
+    url: location.pathname, ua: navigator.userAgent.slice(0, 300), version: VERSION };
+  let q = []; try { q = JSON.parse(ls.get(ERRQ) || '[]'); } catch { /* пусто */ }
+  q.push(item); ls.set(ERRQ, JSON.stringify(q.slice(-20)));
+  flushErrors();
+}
+let flushing = false;
+async function flushErrors() {
+  if (flushing || isDemo || !S.code || S.gate) return; flushing = true;
+  try {
+    for (;;) {
+      let q = []; try { q = JSON.parse(ls.get(ERRQ) || '[]'); } catch { q = []; }
+      if (!q.length) break;
+      try { await api.logError(q[0]); } catch { break; } // нет связи — отправим в следующий раз
+      ls.set(ERRQ, JSON.stringify(q.slice(1)));
+    }
+  } finally { flushing = false; }
+}
+window.addEventListener('error', (e) => { if (e.message) report('js', e.message, `${e.filename || ''}:${e.lineno || ''}:${e.colno || ''}\n${e.error?.stack || ''}`); });
+window.addEventListener('unhandledrejection', (e) => { const r = e.reason; report('js', r?.message || String(r), r?.stack || ''); });
 
 // ---------- тема ----------
 const applyTheme = () => {
@@ -167,7 +197,8 @@ $root.addEventListener('click', (e) => {
 async function guard(fn, msgEl) {
   try { await fn(); }
   catch (e) {
-    if (!(e instanceof ApiError)) { console.error(e); if (msgEl) msgEl.textContent = 'Что-то пошло не так. Попробуйте ещё раз.'; return; }
+    if (!(e instanceof ApiError)) { console.error(e); report('js', e?.message || String(e), e?.stack || ''); if (msgEl) msgEl.textContent = 'Что-то пошло не так. Попробуйте ещё раз.'; return; }
+    if (e.kind === 'rejected') report('rejected', `отказ базы: ${e.detail || '—'}`, '');
     if (e.kind === 'bad_code') { S.gate = 'bad'; render(); }
     else if (msgEl) msgEl.textContent = e.kind === 'forbidden' ? 'Это может сделать только автор или админ.' : e.kind === 'offline' ? 'Нет связи с базой. Проверьте интернет и повторите.' : e.kind === 'db' ? 'База не отвечает (возможно, «спит»). Повторите через минуту.' : `Не удалось сохранить: ${e.detail || 'отказ базы'}`;
     else { S.err = e; render(); }
@@ -188,7 +219,7 @@ function render() {
     const fr = $root.querySelector('#flash-retry'); if (fr) fr.onclick = async (e) => { e.preventDefault(); fr.textContent = 'обновляю…'; await refreshAfterWrite('Связь всё ещё плохая. Попробуйте позже.'); render(); }; }
 }
 // Загрузка: если база долго молчит, честно говорим об этом (запрос сам оборвётся по таймауту и покажет «Повторить»).
-const VIEWS = { menu: () => viewMenu(), list: () => viewList(), detail: () => viewDetail(), map: () => viewMap(), slot: () => viewSlot(), rate: () => viewRate(), me: () => viewMe(), invites: () => viewInvites(), editplace: () => viewEditPlace(), net: () => viewNet() };
+const VIEWS = { news: () => viewNews(), errors: () => viewErrors(), menu: () => viewMenu(), list: () => viewList(), detail: () => viewDetail(), map: () => viewMap(), slot: () => viewSlot(), rate: () => viewRate(), me: () => viewMe(), invites: () => viewInvites(), editplace: () => viewEditPlace(), net: () => viewNet() };
 DESK.addEventListener('change', () => { if (S.data && !S.gate && !S.err) render(); });
 
 // ---------- ПК-версия: панель слева и одна или две рабочие колонки ----------
@@ -202,18 +233,33 @@ function railHtml(v) {
     <button class="r-me" data-act="go" data-view="me" aria-label="Открыть профиль"><span class="me-tile">${avatarSvg(S.seed, { size: 40, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg() : ''}</span>
       <span class="grow"><b>${esc(meName())}</b><small>${S.role === 'admin' ? 'админ' : 'участник'} · профиль</small></span></button>
     <button class="r-cta${v === 'slot' ? ' on' : ''}" data-act="go" data-view="slot"><span class="tag">01 · Слот-машина</span><span class="ttl">Выбрать<br>место</span><span class="letters" aria-hidden="true"><b>G</b><b>A</b><b>S</b></span></button>
-    <nav class="r-list">${nav('list', 'Все оценённые', 'list', v === 'list' || v === 'detail' || v === 'map', `<small>${rated}</small>`)}${nav('rate', 'Оценить заведение', 'plus', v === 'rate')}</nav>
+    <nav class="r-list">${nav('list', 'Все оценённые', 'list', v === 'list' || v === 'detail' || v === 'map', `<small>${rated}</small>`)}${nav('rate', 'Оценить заведение', 'plus', v === 'rate')}${S.role === 'admin' ? nav('errors', 'Ошибки', 'warn', v === 'errors', `<small>${S.data?.err_count ?? ''}</small>`) : ''}</nav>
     ${isDemo ? '<div class="notice">Демо-режим: выдуманные примеры.</div>' : ''}
     <div class="r-foot"><button class="r-nav" data-act="theme">${themeIcon()}<span>Сменить тему</span></button>
-      <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${netStatus()}</span></div></div>`;
+      <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${netStatus()}</span></div>
+      <button class="r-ver" data-act="go" data-view="news">версия ${VERSION} · что нового</button></div>`;
+}
+// На больших экранах интерфейс увеличивается вместе с шириной (макет рассчитан на 1440 px), чтобы не выглядеть мелким.
+const deskScale = () => Math.min(2, Math.max(1, Math.round((innerWidth / 1440) * 20) / 20));
+const deskStyle = () => { const k = deskScale(); return k > 1 ? `zoom:${k};height:calc(100dvh / ${k})` : ''; };
+let resizeT = 0;
+addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => {
+  const dk = $root.querySelector('.dk'); if (!dk || !DESK.matches) return;
+  dk.setAttribute('style', deskStyle()); fixDeskHeight(dk); S.map?.invalidateSize();
+}, 150); });
+// Подгоняем высоту под окно: браузеры по-разному применяют zoom к 100dvh, поэтому меряем и правим.
+function fixDeskHeight(dk) {
+  const h = dk.getBoundingClientRect().height;
+  if (h && Math.abs(h - innerHeight) > 2) dk.style.height = `${parseFloat(getComputedStyle(dk).height) * innerHeight / h}px`;
 }
 function renderDesk() {
   const v = cur.view === 'menu' ? 'list' : cur.view;
   const two = v === 'list' || v === 'detail' || v === 'map';
   const oldA = $root.querySelector('.dk.two .dk-a'); const keep = two && oldA ? oldA.scrollTop : 0; // список не прыгает наверх при выборе места
   document.body.classList.add('desk');
-  $root.innerHTML = `<div class="dk ${two ? 'two' : 'one'} v-${v}"><aside class="rail">${railHtml(v)}</aside><main class="dk-a"></main>${two ? '<section class="dk-b"></section>' : ''}</div>`;
+  $root.innerHTML = `<div class="dk ${two ? 'two' : 'one'} v-${v}" style="${deskStyle()}"><aside class="rail">${railHtml(v)}</aside><main class="dk-a"></main>${two ? '<section class="dk-b"></section>' : ''}</div>`;
   const A = $root.querySelector('.dk-a'); const B = $root.querySelector('.dk-b');
+  fixDeskHeight($root.querySelector('.dk'));
   try {
     if (two) { $app = A; viewList(); $app = B; if (v === 'detail') viewDetail(); else viewMapPane(); }
     else { $app = A; (VIEWS[v] || viewList)(); }
@@ -265,7 +311,7 @@ function viewMenu() {
         <span class="ttl">Карта</span></button>
     </div>
     <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
-    <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${isDemo ? 'демо' : S.online === false ? 'нет связи с базой · показаны сохранённые данные' : S.online ? 'база на связи' : 'обновляю…'}</span></div>`;
+    <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${isDemo ? 'демо' : S.online === false ? 'нет связи с базой · показаны сохранённые данные' : S.online ? 'база на связи' : 'обновляю…'}</span><button class="ver" data-act="go" data-view="news">v${VERSION}</button></div>`;
 }
 
 function downloadBackup() {
@@ -291,8 +337,9 @@ function viewMe() {
       <label class="pill" style="display:inline-block;margin-top:12px"><input type="checkbox" id="panon" ${S.anon ? 'checked' : ''}><span>Анонимно по умолчанию</span></label>
       <p class="small muted" style="margin:10px 0 0">Анонимно: имя не сохраняется нигде, в постах будет «Аноним». Выбор можно менять в каждой рецензии отдельно.</p></div>
     <div class="err" id="msg"></div>
-    <button class="btn block" data-act="go" data-view="net">Проверка связи</button>
-    <button class="btn block" id="backup" style="margin-top:10px">Скачать копию оценок</button>`;
+    <div class="me-actions">${S.realRole === 'admin' && S.role === 'admin' ? `<button class="btn" data-act="go" data-view="errors">${ico('warn')}<span>Ошибки${S.data?.err_count ? ` · ${S.data.err_count}` : ''}</span></button>` : ''}
+      <button class="btn" data-act="go" data-view="net">Проверка связи</button><button class="btn" id="backup">Скачать копию оценок</button></div>
+    <button class="ver-line" data-act="go" data-view="news">G.A.S. Rating · версия ${VERSION} · что нового</button>`;
   const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
   const reroll = $('#reroll');
   if (reroll) reroll.onclick = () => {
@@ -310,6 +357,35 @@ function viewMe() {
     const code = parsePastedLink($('#newkey').value); if (!code) return;
     S.code = code; ls.set('gas_code', code); viewLoading(); await refresh(); render();
   };
+}
+
+// ---------- что нового: история версий ----------
+function viewNews() {
+  $app.innerHTML = `${bar('Что нового')}<p class="small muted" style="margin:0 0 12px">Сейчас на сайте версия <b>${VERSION}</b>.</p>
+    ${CHANGELOG.map(([v, d, t], i) => `<div class="card"${i ? '' : ' style="border-color:var(--acc)"'}><div class="label">Версия ${esc(v)} · ${esc(d)}</div><p style="margin:8px 0 0">${esc(t)}</p></div>`).join('')}`;
+}
+
+// ---------- журнал ошибок (только админ) ----------
+function viewErrors() {
+  if (S.role !== 'admin') return go('menu', {}, true);
+  $app.innerHTML = `${bar('Ошибки')}
+    <p class="small muted" style="margin:0 0 12px">Сюда сами попадают сбои у всех участников: ошибки в коде, обрывы связи, отказы базы. Скопируйте и пришлите Claude, чтобы разобрать.</p>
+    <div class="row wrap" style="margin-bottom:12px"><button class="btn accent" id="ecopy" disabled>Скопировать все</button><button class="btn danger" id="eclear" disabled>Очистить</button></div>
+    <div class="err" id="msg"></div><div id="elist"><p class="muted">Загружаю…</p></div>`;
+  const msg = $app.querySelector('#msg'); let text = '';
+  const paint = async () => {
+    let list;
+    try { list = await api.listErrors(); } catch { $app.querySelector('#elist').innerHTML = '<p class="err">Не удалось загрузить журнал.</p>'; return; }
+    if (S.data) S.data.err_count = list.length;
+    const t = (x) => new Date(x.at).toLocaleString('ru');
+    text = list.map((x) => `[${t(x)}] v${x.version || '?'} · ${x.who} · ${x.kind}: ${x.message}\n${x.detail || ''}\n${x.ua || ''}`).join('\n\n');
+    $app.querySelector('#elist').innerHTML = list.length ? list.map((x) => `<div class="card errc"><div class="label">${esc(t(x))} · ${esc(x.who)} · v${esc(x.version || '?')} · ${esc(x.kind)}</div>
+      <p style="margin:8px 0 0;font-weight:600">${esc(x.message)}</p>${x.detail ? `<pre>${esc(x.detail)}</pre>` : ''}<div class="small muted">${esc(x.ua || '')}</div></div>`).join('') : '<p class="muted">Ошибок нет.</p>';
+    $app.querySelector('#ecopy').disabled = !list.length; $app.querySelector('#eclear').disabled = !list.length;
+  };
+  $app.querySelector('#ecopy').onclick = async () => { try { await navigator.clipboard.writeText(text); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { msg.style.color = ''; msg.innerHTML = '<textarea readonly id="etxt" style="min-height:160px"></textarea>'; const ta = msg.querySelector('#etxt'); ta.value = text; ta.select(); } };
+  $app.querySelector('#eclear').onclick = () => confirm('Очистить журнал ошибок?') && guard(async () => { await api.clearErrors(); await paint(); }, msg);
+  paint();
 }
 
 // ---------- проверка связи: что доходит от базы и от сайта ----------
@@ -483,9 +559,9 @@ function viewDetail() {
     ${s.count && isThin(s) ? `<div class="notice soft">${ico('info')}<span>Пока одна рецензия: звёзды и итог появятся после второй, а в слот-машину место попадёт после неё.</span></div>` : ''}
     <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: примерно поровну качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота) и звёзды. Доступность и туалет показываются отдельно и в итог не входят. Строгость авторов слегка выравнивается, а к каждому месту подмешивается среднее по группе (как две лишние рецензии), чтобы одна оценка не решала всё. Звёзды места — медиана вердиктов; при ничьей берётся меньшее, а «ехать специально» не выдаётся, если кто-то поставил 0. Меньше двух рецензий — «мало данных»: такое место не попадает в слот-машину.</p></details>
     ${d?.kind === 'quality' ? `<div class="notice">${ico('warn')}<span>Мнения о качестве расходятся${d.scales.length ? `: сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : d?.kind === 'trip' ? `<div class="notice soft">${ico('info')}<span>Качество оценили похоже, но по-разному решили, стоит ли ехать специально (вердикты от ${Math.min(...vs)} до ${Math.max(...vs)}). Это не спор: у каждого своя мера «поехать специально».</span></div>` : ''}
-    <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon, p.name, ios))}">Открыть в картах</a>
+    <div class="row" style="margin-top:14px"><a class="btn grow" href="${esc(mapsLink(p.lat, p.lon))}" target="_blank" rel="noopener">${ico('map')}<span class="lbl-long">Открыть в картах</span><span class="lbl-short">Карты</span></a>
       <button class="btn icon-only" id="share" aria-label="Поделиться местом" title="Поделиться">${ico('share')}</button>
-      <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? 'Изменить мою' : 'Оценить'}</button></div>
+      <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? '<span class="lbl-long">Изменить мою</span><span class="lbl-short">Изменить</span>' : 'Оценить'}</button></div>
     ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="small muted" id="phnote" style="margin-top:6px">Загружаю фото…</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
     <div class="err" id="msg"></div>
     <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${admin ? `<button class="btn" data-act="go" data-view="editplace" data-id="${p.id}">Изменить место</button>` : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
@@ -884,7 +960,7 @@ function viewSlot() {
       <div class="muted small" style="margin-top:6px">${esc(win.place.address)}${km != null ? ` · ${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''}</div></div>
       <div class="big ${scoreClass(win.score)}">${fmt(win.score)}<small>/10</small></div></div>
       ${barsHtml(win.scores, ['taste', 'service', 'toilet'])}
-      <div class="row"><a class="btn accent" style="flex:1.3" href="${esc(mapsLink(win.place.lat, win.place.lon, win.place.name, ios))}">Открыть в картах</a>
+      <div class="row"><a class="btn accent" style="flex:1.3" href="${esc(mapsLink(win.place.lat, win.place.lon))}" target="_blank" rel="noopener">${ico('map')}<span class="lbl-long">Открыть в картах</span><span class="lbl-short">Карты</span></a>
       <button class="btn icon-only" id="slotshare" aria-label="Поделиться местом" title="Поделиться">${ico('share')}</button>
       <button class="btn" style="flex:1" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div><div class="err" id="slotmsg"></div></div>
       <div id="resmap" class="res-map dk-only"></div></div>`;
@@ -918,7 +994,7 @@ function viewSlot() {
   const before = cached ? JSON.stringify(cached) : null;
   const ok = await refresh();
   clearTimeout(S.slowT);
-  if (ok) syncAvatar(); // неподтверждённый выбор кубиком отправляем снова
+  if (ok) { syncAvatar(); flushErrors(); } // неподтверждённый выбор кубиком и накопленные ошибки отправляем снова
   if (!cached) { render(); openDeep(); return; }
   if (openDeep()) return;
   if (!ok) { if (S.gate) return render(); S.err = null; if (cur.view === 'menu') render(); return; } // нет связи: остаёмся на данных из кэша

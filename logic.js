@@ -138,9 +138,10 @@ export function findDuplicates(places, { name, lat, lon }) {
 }
 
 // На iPhone схема geo: не работает, поэтому там ссылка на Яндекс Карты.
-export function mapsLink(lat, lon, name = '', ios = false) {
-  if (ios) return `https://yandex.ru/maps/?pt=${lon},${lat}&z=17&l=map`;
-  return `geo:${lat},${lon}?q=${lat},${lon}(${encodeURIComponent(name)})`;
+// Ссылка «Открыть в картах»: обычная https-ссылка на Яндекс Карты. Работает на компьютере и в любом браузере телефона;
+// если стоит приложение Яндекс Карт, телефон откроет его. (Раньше на Android была ссылка geo:, она открывалась не у всех.)
+export function mapsLink(lat, lon) {
+  return `https://yandex.ru/maps/?pt=${lon},${lat}&z=17&l=map`;
 }
 
 // «Поделиться» местом: текст для чата. Ссылка на сайт без личного ключа (#p=номер места), получатель входит своим ключом;
