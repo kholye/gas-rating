@@ -21,7 +21,7 @@ const loadAuthor = () => { let a = ls.get('gas_author'); if (!isUuid(a)) { a = n
 const AUTHOR = loadAuthor();
 // Зерно аватарки: выбранное кубиком (из базы или с этого телефона), иначе вычисленное из кода профиля.
 const loadSeed = () => { const raw = ls.get('gas_avatar'); const n = Number(raw); return raw && Number.isInteger(n) && n >= 0 && n <= 4294967295 ? n : authorSeed(AUTHOR); };
-const S = { code: null, seed: loadSeed(), author: AUTHOR, name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', data: null, sums: [], gate: null, err: null, map: null };
+const S = { code: null, seed: loadSeed(), author: AUTHOR, name: ls.get('gas_name') || '', anon: ls.get('gas_anon') === '1', role: 'user', realRole: 'user', asUser: ls.get('gas_as_user') === '1', data: null, sums: [], gate: null, err: null, map: null };
 
 // ---------- секретный код: из #k=… в адресе, затем адрес очищается ----------
 {
@@ -81,7 +81,8 @@ function build(data) {
   if (mine) { S.seed = mine.avatar_seed; ls.set('gas_avatar', String(mine.avatar_seed)); }
   const by = new Map();
   data.reviews.forEach((r) => { if (!by.has(r.place_id)) by.set(r.place_id, []); by.get(r.place_id).push(r); });
-  S.role = data.role || 'user';
+  S.realRole = data.role || 'user';
+  S.role = S.realRole === 'admin' && S.asUser ? 'user' : S.realRole; // «режим пользователя» для админа: только вид интерфейса, ключ тот же
   const model = ratingModel(data.reviews); // общий средний балл и поправка на строгость авторов
   S.sums = data.places.map((p) => summarize(p, by.get(p.id) || [], model));
 }
@@ -192,17 +193,19 @@ function viewMe() {
       <button class="btn" id="reroll">Перебросить кубик</button></div></div>
     <div class="card"><div class="label">Доступ</div>
       <p style="margin:8px 0 0">${S.role === 'admin' ? 'Вы вошли как <b>админ</b>: можно править места, удалять любые рецензии и фото.' : 'Вы вошли как <b>участник</b>: можно добавлять места, оценки и фото, править и удалять только своё.'}</p>
+      ${S.realRole === 'admin' ? `<p class="small muted" style="margin:8px 0 0">${S.asUser ? 'Включён режим пользователя: кнопки админа спрятаны, чтобы случайно ничего не удалить.' : 'Режим пользователя прячет кнопки админа, чтобы случайно ничего не удалить.'}</p><button class="btn" id="asuser" style="margin-top:8px">${S.asUser ? 'Вернуться в режим админа' : 'Переключиться в режим пользователя'}</button>` : ''}
       <label class="lbl" for="newkey">Сменить ключ доступа (ссылка или код)</label>
       <div class="row"><input type="text" id="newkey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…/#k=…"><button class="btn" id="setkey">Войти</button></div></div>
     <div class="card"><div class="label">Имя в рецензиях</div>
       <label class="lbl" for="pname">Ваше имя</label><input type="text" id="pname" maxlength="40" value="${esc(S.name)}" placeholder="Как подписывать рецензии">
       <label class="pill" style="display:inline-block;margin-top:12px"><input type="checkbox" id="panon" ${S.anon ? 'checked' : ''}><span>Анонимно по умолчанию</span></label>
       <p class="small muted" style="margin:10px 0 0">Анонимно: имя не сохраняется нигде, в постах будет «Аноним». Выбор можно менять в каждой рецензии отдельно.</p></div>
-    <div class="card"><div class="label">Код профиля</div>
+    ${S.realRole === 'admin' && !isDemo ? `<div class="card"><div class="label">Код профиля</div>
+      <p class="small muted" style="margin:8px 0 0">Вам он не нужен: у админа один профиль на всех устройствах, он привязан к админскому ключу.</p></div>` : `<div class="card"><div class="label">Код профиля</div>
       <p class="small muted" style="margin:8px 0 10px">По нему сайт узнаёт ваши рецензии. Сохраните его, чтобы править свои оценки на другом телефоне. Никому не показывайте.</p>
       <div class="row"><input type="text" id="mycode" readonly value="${esc(S.author)}" style="font-family:var(--mono);font-size:13px"><button class="btn" id="copycode">Копировать</button></div>
       <label class="lbl" for="othercode">Ввести код профиля с другого телефона</label>
-      <div class="row"><input type="text" id="othercode" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"><button class="btn" id="setcode">Применить</button></div></div>
+      <div class="row"><input type="text" id="othercode" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"><button class="btn" id="setcode">Применить</button></div></div>`}
     <div class="err" id="msg"></div>
     <button class="btn block" id="backup">Скачать копию оценок</button>`;
   const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
@@ -215,8 +218,10 @@ function viewMe() {
   $('#pname').oninput = (e) => { S.name = e.target.value; ls.set('gas_name', S.name); };
   $('#panon').onchange = (e) => { S.anon = e.target.checked; ls.set('gas_anon', S.anon ? '1' : '0'); };
   $('#backup').onclick = downloadBackup;
-  $('#copycode').onclick = async () => { try { await navigator.clipboard.writeText(S.author); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { $('#mycode').select(); msg.textContent = 'Выделено: скопируйте вручную.'; } };
-  $('#setcode').onclick = async () => {
+  const asuser = $('#asuser');
+  if (asuser) asuser.onclick = () => { S.asUser = !S.asUser; ls.set('gas_as_user', S.asUser ? '1' : '0'); S.role = S.realRole === 'admin' && S.asUser ? 'user' : S.realRole; render(); };
+  if ($('#copycode')) $('#copycode').onclick = async () => { try { await navigator.clipboard.writeText(S.author); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { $('#mycode').select(); msg.textContent = 'Выделено: скопируйте вручную.'; } };
+  if ($('#setcode')) $('#setcode').onclick = async () => {
     const c = $('#othercode').value.trim().toLowerCase();
     if (!isUuid(c)) { msg.style.color = ''; msg.textContent = 'Это не похоже на код профиля.'; return; }
     S.author = c; ls.set('gas_author', c); ls.set('gas_avatar', ''); S.seed = authorSeed(c); await refresh(); render();
