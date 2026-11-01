@@ -1,6 +1,6 @@
 import {
   SCALES, summarize, RATED_SORTS, slotPool, searchSummaries, sortSummaries, findDuplicates,
-  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace, parseMapLink, MAP_APPS,
+  distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace, parseMapLink, MAP_APPS, fmtPrice, priceToPct, parsePrice,
 } from './logic.js';
 import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
@@ -110,12 +110,22 @@ const barsHtml = (sc, keys = SCALES.map(([k]) => k)) => `<div class="bars">${key
   const v = sc[k]; const on = v == null ? 0 : Math.round(v);
   return `<span>${SHORT[k].toUpperCase()}</span><span class="seg5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= on ? 'on' : ''}"></i>`).join('')}</span><b>${fmt(v)}</b>`;
 }).join('')}</div>`;
+// Цены в карточке места: средний диапазон крупно и шкала (серые полоски — каждый автор, лаймовая — средний).
+function priceHtml(s) {
+  const txt = fmtPrice(s.price); if (!txt) return '';
+  const bar = (f, t, cls) => { const a = priceToPct(f ?? t); const b = priceToPct(t ?? f); return `<i class="${cls}" style="left:${a}%;width:${Math.max(1.5, b - a)}%"></i>`; };
+  const own = s.reviews.filter((r) => r.price_from != null || r.price_to != null).map((r) => bar(r.price_from, r.price_to, 'pr-one')).join('');
+  return `<div class="card pricebox"><div class="pr-head"><span class="label">Цены · на человека</span><b>${txt}</b></div>
+    <div class="pr-scale"><span class="pr-line"></span>${own}${bar(s.price.from, s.price.to, 'pr-avg')}</div>
+    <div class="pr-ticks"><span>0</span><span style="left:40%">1 000</span><span style="left:70%">2 500</span><span style="left:100%">5 000+</span></div>
+    <div class="small muted" style="margin-top:8px">${s.price.n > 1 ? `Средний диапазон по ${s.price.n} рецензиям.` : 'По одной рецензии.'} На итоговый балл не влияет.</div></div>`;
+}
 const toiletStat = (r) => (r.toilet_present === true && r.toilet != null ? `Туалет ${r.toilet}` : r.toilet_present === false ? 'Туалета нет' : '');
 // Рецензия как пост: аватар с линией «ветки», имя, давность, вердикт, текст, фото, показатели.
 const postHtml = (r, last) => `<article class="post"><div class="side"><span class="av-tile">${reviewAvatar(r, { size: 38, label: `Аватар: ${displayName(r)}` })}</span>${last ? '' : '<span class="line"></span>'}</div>
   <div class="main"><div class="hd"><b>${esc(displayName(r))}</b>${r.mine ? '<span class="ago">· вы</span>' : ''}<span class="ago">· ${esc(ago(r.updated_at || r.created_at))}</span>${stars(r.verdict)}</div>
   ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}<div class="thumbs" data-rid="${r.id}"></div>
-  <div class="stats"><span>Вкус ${r.taste}</span><span>Сервис ${r.service}</span><span>Чистота ${r.clean}</span>${toiletStat(r) ? `<span>${toiletStat(r)}</span>` : ''}<span>Доступ ${r.access}</span><span>Впечатл. ${r.impression}</span></div>${S.role === 'admin' ? `<div style="margin-top:10px"><button class="btn danger" style="min-height:34px;padding:0 12px;font-size:13px" data-del="${r.id}">Удалить (админ)</button></div>` : ''}</div></article>`;
+  <div class="stats">${fmtPrice({ from: r.price_from, to: r.price_to }) ? `<span>Цены ${fmtPrice({ from: r.price_from, to: r.price_to })}</span>` : ''}<span>Вкус ${r.taste}</span><span>Сервис ${r.service}</span><span>Чистота ${r.clean}</span>${toiletStat(r) ? `<span>${toiletStat(r)}</span>` : ''}<span>Доступ ${r.access}</span><span>Впечатл. ${r.impression}</span></div>${S.role === 'admin' ? `<div style="margin-top:10px"><button class="btn danger" style="min-height:34px;padding:0 12px;font-size:13px" data-del="${r.id}">Удалить (админ)</button></div>` : ''}</div></article>`;
 
 // ---------- данные ----------
 function build(data) {
@@ -237,7 +247,7 @@ function railHtml(v) {
     ${isDemo ? '<div class="notice">Демо-режим: выдуманные примеры.</div>' : ''}
     <div class="r-foot"><button class="r-nav" data-act="theme">${themeIcon()}<span>Сменить тему</span></button>
       <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${netStatus()}</span></div>
-      <button class="r-ver" data-act="go" data-view="news">версия ${VERSION} · что нового</button></div>`;
+      <button class="r-ver" data-act="go" data-view="news">бета ${VERSION} · что нового</button></div>`;
 }
 // На больших экранах интерфейс увеличивается вместе с шириной (макет рассчитан на 1440 px), чтобы не выглядеть мелким.
 const deskScale = () => Math.min(2, Math.max(1, Math.round((innerWidth / 1440) * 20) / 20));
@@ -311,7 +321,7 @@ function viewMenu() {
         <span class="ttl">Карта</span></button>
     </div>
     <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
-    <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${isDemo ? 'демо' : S.online === false ? 'нет связи с базой · показаны сохранённые данные' : S.online ? 'база на связи' : 'обновляю…'}</span><button class="ver" data-act="go" data-view="news">v${VERSION}</button></div>`;
+    <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${isDemo ? 'демо' : S.online === false ? 'нет связи с базой · показаны сохранённые данные' : S.online ? 'база на связи' : 'обновляю…'}</span><button class="ver" data-act="go" data-view="news">β ${VERSION}</button></div>`;
 }
 
 function downloadBackup() {
@@ -339,7 +349,7 @@ function viewMe() {
     <div class="err" id="msg"></div>
     <div class="me-actions">${S.realRole === 'admin' && S.role === 'admin' ? `<button class="btn" data-act="go" data-view="errors">${ico('warn')}<span>Ошибки${S.data?.err_count ? ` · ${S.data.err_count}` : ''}</span></button>` : ''}
       <button class="btn" data-act="go" data-view="net">Проверка связи</button><button class="btn" id="backup">Скачать копию оценок</button></div>
-    <button class="ver-line" data-act="go" data-view="news">G.A.S. Rating · версия ${VERSION} · что нового</button>`;
+    <button class="ver-line" data-act="go" data-view="news">G.A.S. Rating · бета ${VERSION} · что нового</button>`;
   const $ = (sel) => $app.querySelector(sel); const msg = $('#msg');
   const reroll = $('#reroll');
   if (reroll) reroll.onclick = () => {
@@ -361,7 +371,7 @@ function viewMe() {
 
 // ---------- что нового: история версий ----------
 function viewNews() {
-  $app.innerHTML = `${bar('Что нового')}<p class="small muted" style="margin:0 0 12px">Сейчас на сайте версия <b>${VERSION}</b>.</p>
+  $app.innerHTML = `${bar('Что нового')}<p class="small muted" style="margin:0 0 12px">Сейчас на сайте бета-версия <b>${VERSION}</b>. Сайт ещё в разработке, поэтому номер начинается с нуля.</p>
     ${CHANGELOG.map(([v, d, t], i) => `<div class="card"${i ? '' : ' style="border-color:var(--acc)"'}><div class="label">Версия ${esc(v)} · ${esc(d)}</div><p style="margin:8px 0 0">${esc(t)}</p></div>`).join('')}`;
 }
 
@@ -522,7 +532,7 @@ function viewList() {
     const sel = (s) => (cur.view === 'detail' && cur.p.id === s.place.id ? ' sel' : '');
     const card = (s) => s.stars === 3 && !isThin(s) ? `<button class="item top${sel(s)}" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="ph" data-pid="${s.place.id}"></div><div class="shade"></div>
-      <div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ЕХАТЬ СПЕЦИАЛЬНО</span></div>
+      <div class="lbl3"><b>3 ЗВЕЗДЫ</b><span>· ${fmtPrice(s.price) ? `₽ ${fmtPrice(s.price).replace(' ₽', '')}` : 'ЕХАТЬ СПЕЦИАЛЬНО'}</span></div>
       <div class="bot"><div class="txt"><div class="nm">${esc(s.place.name)}</div><div class="meta">${esc(s.place.address)}</div></div><div class="sc">${fmt(s.score)}</div></div></button>`
       : isThin(s) ? `<button class="item thin${sel(s)}" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${placeBadge(s)}</div>
@@ -531,7 +541,7 @@ function viewList() {
       : `<button class="item${sel(s)}" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
-      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span><span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`;
+      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span>${fmtPrice(s.price) ? `<span class="chip price">${fmtPrice(s.price)}</span>` : ''}<span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`;
     $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => {
       const div = split && isThin(s) && !dividerDone && (dividerDone = true) ? '<div class="divider"><span>МАЛО ДАННЫХ · ЖДУТ ВТОРОЙ РЕЦЕНЗИИ</span></div>' : '';
       return div + card(s);
@@ -556,6 +566,7 @@ function viewDetail() {
     <div class="ph-head"><div class="grow"><div class="label">${esc(p.kind || 'место')}</div><h1>${esc(p.name)}</h1><div class="muted small" style="margin-top:8px">${esc(p.address)}</div></div>
       ${s.score == null ? '' : isThin(s) ? `<div style="text-align:right;flex:none">${thinTag(s)}</div>` : `<div style="text-align:right;flex:none"><div class="big ${scoreClass(s.score)}">${fmt(s.score)}<small>/10</small></div><div style="margin-top:6px">${stars(s.stars)}</div></div>`}</div>
     ${s.count ? barsHtml(s.scores) : '<p class="muted">Пока нет рецензий.</p>'}
+    ${priceHtml(s)}
     ${s.count && isThin(s) ? `<div class="notice soft">${ico('info')}<span>Пока одна рецензия: звёзды и итог появятся после второй, а в слот-машину место попадёт после неё.</span></div>` : ''}
     <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: примерно поровну качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота) и звёзды. Доступность и туалет показываются отдельно и в итог не входят. Строгость авторов слегка выравнивается, а к каждому месту подмешивается среднее по группе (как две лишние рецензии), чтобы одна оценка не решала всё. Звёзды места — медиана вердиктов; при ничьей берётся меньшее, а «ехать специально» не выдаётся, если кто-то поставил 0. Меньше двух рецензий — «мало данных»: такое место не попадает в слот-машину.</p></details>
     ${d?.kind === 'quality' ? `<div class="notice">${ico('warn')}<span>Мнения о качестве расходятся${d.scales.length ? `: сильно разные оценки: ${esc(d.scales.join(', ').toLowerCase())}` : ''}.</span></div>` : d?.kind === 'trip' ? `<div class="notice soft">${ico('info')}<span>Качество оценили похоже, но по-разному решили, стоит ли ехать специально (вердикты от ${Math.min(...vs)} до ${Math.max(...vs)}). Это не спор: у каждого своя мера «поехать специально».</span></div>` : ''}
@@ -708,7 +719,7 @@ function prefill() {
   const r = R.placeId ? S.data.reviews.find((x) => x.place_id === R.placeId && x.mine) : null;
   if (!r) return;
   R.anon = r.author_name == null; if (r.author_name) R.name = r.author_name;
-  ['verdict', 'toilet', 'comment', ...SCALE_KEYS.map(([k]) => k)].forEach((k) => { R[k] = r[k] ?? (k === 'comment' ? '' : null); });
+  ['verdict', 'toilet', 'comment', 'price_from', 'price_to', ...SCALE_KEYS.map(([k]) => k)].forEach((k) => { R[k] = r[k] ?? (k === 'comment' ? '' : null); });
   R.toilet_present = r.toilet_present ?? 'unknown';
 }
 
@@ -725,7 +736,7 @@ function viewRate() {
     ${R.mode === 'new' ? `
       <label class="lbl" for="mlink">Ссылка на место из карт</label>
       <div class="row"><input type="text" id="mlink" name="mlink" value="${esc(R.np.link || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставьте ссылку «Поделиться»"><button type="button" class="btn" id="fromlink">Подставить</button></div>
-      <div class="small muted" id="linkst" style="margin-top:6px">${esc(R.linkNote || `Поддерживаются ${MAP_APPS}. Точка, название и адрес подставятся сами — останется проверить.`)}</div>
+      <div class="small muted" id="linkst" style="margin-top:6px">${esc(R.linkNote || `Поддерживаются ${MAP_APPS}. Нажмите «Подставить»: точка и адрес (и название, если оно есть в ссылке) подставятся сами.`)}</div>
       <label class="lbl" for="nm">Название</label><input type="text" id="nm" name="name" value="${esc(R.np.name)}" maxlength="120">
       <label class="lbl" for="kd">Тип (кафе, ресторан, фастфуд…)</label><input type="text" id="kd" name="kind" list="kinds" value="${esc(R.np.kind)}" maxlength="40">
       <datalist id="kinds"><option>кафе<option>ресторан<option>фастфуд<option>шаурмечная<option>шашлычная<option>бар<option>пекарня</datalist>
@@ -741,6 +752,10 @@ function viewRate() {
     ${SCALE_KEYS.map(([k, n]) => `<div class="scale-row"><div class="name">${n}</div>${seg(k, [1, 2, 3, 4, 5], null, R[k])}</div>`).join('')}
     <div class="scale-row"><div class="name">Туалет</div>${seg('toilet_present', ['yes', 'no', 'unknown'], ['Есть', 'Нет', 'Не помню'], tp === true ? 'yes' : tp === false ? 'no' : tp)}</div>
     ${tp === true ? `<div class="scale-row"><div class="name">Оценка туалета</div>${seg('toilet', [1, 2, 3, 4, 5], null, R.toilet)}</div>` : ''}
+    <label class="lbl" for="pf">Цены <span class="muted" style="text-transform:none;letter-spacing:0">· средний чек на человека, если помните</span></label>
+    <div class="row price-row"><label class="price-in"><span>от</span><input type="text" inputmode="numeric" id="pf" name="price_from" value="${R.price_from ?? ''}" placeholder="—" autocomplete="off"><span>₽</span></label>
+      <label class="price-in"><span>до</span><input type="text" inputmode="numeric" id="pt" name="price_to" value="${R.price_to ?? ''}" placeholder="—" autocomplete="off"><span>₽</span></label></div>
+    <div class="pills" style="margin-top:8px">${[['0', '500', 'до 500'], ['500', '1000', '500–1 000'], ['1000', '2000', '1 000–2 000'], ['2000', '', '2 000+'], ['', '', 'не помню']].map(([a, b, t]) => `<button type="button" class="chip-btn" data-price="${a}-${b}">${t}</button>`).join('')}</div>
     <label class="lbl" for="ph">Фото (до 5 на рецензию; сожмутся на телефоне)</label>
     <div class="form-thumbs">${R.photos.map((ph, i) => `<span class="thumb"><img src="${ph.url}" alt=""><button type="button" class="x" data-rm="${i}" aria-label="Убрать фото">×</button></span>`).join('')}</div>
     <input type="file" id="ph" accept="image/*" multiple ${R.photos.length >= 5 ? 'disabled' : ''}>
@@ -772,11 +787,14 @@ function viewRate() {
     if (name === 'comment') R.comment = value;
     else if (name === 'aname') R.name = value;
     else if (name === 'mlink') R.np.link = value;
+    else if (name === 'price_from' || name === 'price_to') R[name] = parsePrice(value);
     else if (['name', 'kind', 'address'].includes(name)) { R.np[name] = value; if (name === 'name') clearTimeout(R.t), R.t = setTimeout(redrawKeepFocus, 600); }
   });
   const redrawKeepFocus = () => { const id = document.activeElement?.id; redraw(); if (id) document.getElementById(id)?.focus(); };
   f.addEventListener('click', (e) => {
     const rm = e.target.closest('[data-rm]'); if (rm) { const [gone] = R.photos.splice(Number(rm.dataset.rm), 1); URL.revokeObjectURL(gone.url); redraw(); return; }
+    const pr = e.target.closest('[data-price]');
+    if (pr) { const [a, b] = pr.dataset.price.split('-'); R.price_from = a === '' ? null : Number(a); R.price_to = b === '' ? null : Number(b); redraw(); return; }
     const pk = e.target.closest('[data-pick]'); if (pk) { e.preventDefault(); R.placeId = Number(pk.dataset.pick); R.mode = 'exist'; prefill(); redraw(); }
     const fd = e.target.closest('[data-found]'); if (fd) { const x = R.found[fd.dataset.found]; R.np.lat = +(+x.lat).toFixed(6); R.np.lon = +(+x.lon).toFixed(6); R.np.address = R.np.address || x.display_name; R.found = []; redraw(); }
   });
@@ -809,16 +827,15 @@ function viewRate() {
         const street = [a.road || a.pedestrian || a.footway || a.square, a.house_number].filter(Boolean).join(', ');
         const addr = [street, a.city || a.town || a.village].filter(Boolean).join(', ') || j.display_name || '';
         if (R && !R.np.address.trim() && addr) R.np.address = addr;
-        if (R && !R.np.name.trim() && j.name && ['amenity', 'shop', 'tourism', 'leisure'].includes(j.category)) R.np.name = j.name;
       } catch { /* адрес можно ввести руками */ }
     }
     if (!R) return;
-    R.linkNote = p.lat != null ? `Из ссылки (${p.source}): точка${R.np.name ? ', название' : ''}${R.np.address ? ', адрес' : ''}. Проверьте и поправьте, если нужно.`
+    R.linkNote = p.lat != null ? `Из ссылки (${p.source}): точка${p.name ? ', название' : ''}${R.np.address ? ', адрес' : ''}.${p.name ? '' : ` Название в этой ссылке не передаётся — введите его сами${p.hint ? ` (в ссылке оно латиницей: «${p.hint}»)` : ''}.`} Проверьте и поправьте, если нужно.`
       : `${p.source}: в ссылке нет координат${p.name ? ' (название подставлено)' : ''}${p.source === '2ГИС' ? ', а сайт 2ГИС не пускает автоматические запросы' : ''} — поставьте точку на карте или нажмите «Найти».`;
     redraw();
   };
   const fl = f.querySelector('#fromlink');
-  if (fl) { fl.onclick = fromLink; f.querySelector('#mlink').addEventListener('paste', () => setTimeout(() => { R.np.link = f.querySelector('#mlink').value; fromLink(); }, 0)); }
+  if (fl) fl.onclick = () => { R.np.link = f.querySelector('#mlink').value; fromLink(); }; // раскрываем только по нажатию
   const find = f.querySelector('#find');
   if (find) find.onclick = async () => {
     const q = R.np.address || R.np.name; if (!q.trim()) { msg.textContent = 'Введите адрес или название.'; return; }
@@ -855,6 +872,7 @@ function viewRate() {
       await api.saveReview({
         place_id: id, name: R.name.trim(), anon: R.anon, avatar_seed: R.anon ? null : S.seed, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
         toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
+        price_from: R.price_from ?? null, price_to: R.price_to ?? null,
       });
       let failed = 0;
       for (const [i, ph] of R.photos.entries()) {
@@ -1002,6 +1020,7 @@ function viewSlot() {
     $('#out').innerHTML = `<div class="res-grid"><div class="result"><div class="row" style="align-items:flex-start;gap:12px"><div class="grow"><h3>${esc(win.place.name)}</h3>
       <div class="muted small" style="margin-top:6px">${esc(win.place.address)}${km != null ? ` · ${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''}</div></div>
       <div class="big ${scoreClass(win.score)}">${fmt(win.score)}<small>/10</small></div></div>
+      ${fmtPrice(win.price) ? `<div class="small muted" style="margin-top:6px">Цены: <b style="color:var(--ink)">${fmtPrice(win.price)}</b> на человека</div>` : ''}
       ${barsHtml(win.scores, ['taste', 'service', 'toilet'])}
       <div class="row"><a class="btn accent" style="flex:1.3" href="${esc(mapsLink(win.place.lat, win.place.lon))}" target="_blank" rel="noopener">${ico('map')}<span class="lbl-long">Открыть в картах</span><span class="lbl-short">Карты</span></a>
       <button class="btn icon-only" id="slotshare" aria-label="Поделиться местом" title="Поделиться">${ico('share')}</button>

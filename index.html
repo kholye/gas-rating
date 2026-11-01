@@ -159,6 +159,27 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .lb-load{position:absolute;left:0;right:0;bottom:24px;text-align:center;font:500 12px var(--mono);color:#fff;text-shadow:0 1px 6px #000}
 .btn.icon-only{flex:none;width:48px;padding:0;justify-content:center}
 .btn.icon-only svg.i{width:20px;height:20px}
+.chip.price{color:var(--ink);border-color:var(--ln2)}
+.price-row{gap:10px}
+.price-in{flex:1;display:flex;align-items:center;gap:8px;min-height:48px;padding:0 14px;border-radius:14px;border:1px solid var(--ln2);background:var(--s1)}
+.price-in span{color:var(--mut);font-size:14px}
+.price-in input{flex:1;min-width:0;border:0;background:none;padding:0;min-height:44px;font:700 17px var(--mono);color:var(--ink);outline:none}
+.price-in:focus-within{border-color:var(--acc)}
+.chip-btn{min-height:36px;padding:0 12px;border-radius:10px;border:1px solid var(--ln2);background:none;color:var(--mut);font:500 11px var(--mono);letter-spacing:.04em;cursor:pointer}
+.chip-btn:hover{color:var(--ink);border-color:var(--mut)}
+.pricebox{margin-top:14px}
+.pr-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.pr-head b{font:700 16px var(--mono)}
+.pr-scale{position:relative;height:40px;margin-top:10px}
+.pr-line{position:absolute;left:0;right:0;top:19px;height:2px;background:var(--ln)}
+.pr-scale i{position:absolute;display:block;border-radius:4px}
+.pr-one{top:10px;height:4px;background:var(--ln2)}
+.pr-one:nth-of-type(odd){top:26px}
+.pr-avg{top:17px;height:6px;background:var(--acc)}
+.pr-ticks{position:relative;height:14px;font:500 10px var(--mono);color:var(--dim)}
+.pr-ticks span{position:absolute;transform:translateX(-50%)}
+.pr-ticks span:first-child{left:0;transform:none}
+.pr-ticks span:last-child{transform:translateX(-100%)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .chip{font:500 11px var(--mono);letter-spacing:.04em;text-transform:uppercase;padding:4px 8px;border-radius:8px;border:1px solid var(--ln);color:var(--mut)}
 .chip.warn{border-color:var(--vio);color:var(--vio)}

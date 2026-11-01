@@ -84,8 +84,37 @@ export const inPool = (summary) => summary.score != null && !isThin(summary) && 
 
 export function summarize(place, reviews, model = ratingModel(reviews)) {
   const scores = Object.fromEntries(SCALES.map(([k]) => [k, avgScore(reviews, k)]));
-  return { place, reviews, stars: placeStars(reviews), count: reviews.length, scores, score: placeScore(reviews, model), quality: reviews.length ? mean(reviews.map(qualityOf)) : null };
+  return { place, reviews, stars: placeStars(reviews), count: reviews.length, scores, score: placeScore(reviews, model), quality: reviews.length ? mean(reviews.map(qualityOf)) : null, price: priceRange(reviews) };
 }
+
+// ---- Диапазон цен (средний чек на человека, ₽): только для сведения, на балл не влияет ----
+// Средний диапазон = медиана всех «от» и медиана всех «до»: одна странная оценка его не растянет. Округляем до 50 ₽ (от 1 000 ₽ — до 100 ₽).
+const median = (xs) => { const v = [...xs].sort((a, b) => a - b); const n = v.length; return n ? (n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2) : null; };
+const roundPrice = (x) => (x == null ? null : x >= 1000 ? Math.round(x / 100) * 100 : Math.round(x / 50) * 50);
+export function priceRange(reviews) {
+  const priced = reviews.filter((r) => r.price_from != null || r.price_to != null);
+  if (!priced.length) return null;
+  let from = roundPrice(median(priced.filter((r) => r.price_from != null).map((r) => r.price_from)));
+  let to = roundPrice(median(priced.filter((r) => r.price_to != null).map((r) => r.price_to)));
+  if (from != null && to != null && from > to) [from, to] = [to, from];
+  return { from, to, n: priced.length };
+}
+const rub = (x) => String(x).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
+// «400–900 ₽», «от 2 000 ₽», «до 500 ₽»; null — цен нет
+export function fmtPrice(p) {
+  if (!p || (p.from == null && p.to == null)) return null;
+  if (p.from != null && p.to != null) return p.from === p.to ? `${rub(p.from)} ₽` : `${rub(p.from)}–${rub(p.to)} ₽`;
+  return p.from != null ? `от ${rub(p.from)} ₽` : `до ${rub(p.to)} ₽`;
+}
+// Шкала для карточки места: 0–1 000 ₽ занимает 40%, до 2 500 — 70%, до 5 000+ — 100% (дешёвое различается лучше).
+export function priceToPct(x) {
+  if (x == null) return null;
+  if (x <= 1000) return (x / 1000) * 40;
+  if (x <= 2500) return 40 + ((x - 1000) / 1500) * 30;
+  return Math.min(100, 70 + ((x - 2500) / 2500) * 30);
+}
+// Текст из поля «от/до» → число рублей или null (пробелы и «₽» убираются).
+export const parsePrice = (s) => { const d = String(s ?? '').replace(/[^\d]/g, ''); if (!d) return null; const n = Number(d); return n <= 100000 ? n : 100000; };
 
 export function distanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -261,7 +290,8 @@ export function parseMapLink(text) {
     const pt = q('pt') ? q('pt').split('~')[0] : null;
     const ll = lonlat(q('poi[point]')) || lonlat(q('whatshere[point]')) || lonlat(pt) || lonlat(q('ll'));
     const text = q('text') && !isCoords(q('text')) ? q('text') : '';
-    return out('Яндекс Карты', ll?.[0], ll?.[1], text);
+    const slug = /\/maps\/org\/([^/]+)\/\d+/.exec(u.pathname); // название латиницей из адреса организации — только подсказка
+    return out('Яндекс Карты', ll?.[0], ll?.[1], text, { hint: slug ? dec(slug[1]).replace(/_/g, ' ') : '' });
   }
   if (host === 'maps.app.goo.gl' || host === 'goo.gl') return out('Google Maps', null, null, '', { short: true, url: raw });
   if (/(^|\.)google\.[a-z.]+$/.test(host) && (/^\/maps/.test(u.pathname) || host.startsWith('maps.'))) {

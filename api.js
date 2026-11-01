@@ -71,7 +71,7 @@ const live = (getCode, getAuthor, trouble = () => {}) => {
     saveReview: (r) => call('save_review', {
       p_place_id: r.place_id, p_name: r.anon ? null : r.name, p_anon: !!r.anon, p_verdict: r.verdict, p_access: r.access, p_taste: r.taste,
       p_service: r.service, p_clean: r.clean, p_impression: r.impression,
-      p_toilet_present: r.toilet_present, p_toilet: r.toilet_present ? r.toilet : null, p_comment: r.comment || null, p_avatar_seed: r.avatar_seed ?? null,
+      p_toilet_present: r.toilet_present, p_toilet: r.toilet_present ? r.toilet : null, p_comment: r.comment || null, p_avatar_seed: r.avatar_seed ?? null, p_price_from: r.price_from ?? null, p_price_to: r.price_to ?? null,
     }),
     setAvatar: (seed) => call('update_avatar', { p_seed: seed }),
     deleteReview: (review_id) => call('delete_review', { p_review_id: review_id }),
