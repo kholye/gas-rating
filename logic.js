@@ -292,6 +292,35 @@ export function placeOfDay(pool, date = new Date()) {
   return list[h % list.length];
 }
 
+// ---- Лента «Что нового»: рецензии, правки рецензий, фото и «Хочу сходить», новые сверху ----
+// photoNews — из get_all: [{ review_id, n, at }] (сколько фото добавлено к рецензии в этот день).
+export function feedEvents(summaries, photoNews = []) {
+  const ev = []; const byReview = new Map();
+  for (const s of summaries) {
+    for (const r of s.reviews) {
+      byReview.set(r.id, { r, s });
+      const c = Date.parse(r.created_at) || 0; const u = Date.parse(r.updated_at) || c;
+      const upd = u - c > 60e3; // правка позже минуты после создания — «изменил(а) оценку»
+      ev.push({ kind: upd ? 'update' : 'review', at: upd ? u : c, who: displayName(r), mine: !!r.mine, place: s.place, stars: r.verdict, review: r });
+    }
+    if (!s.count && s.place.added_by_name) ev.push({ kind: 'want', at: Date.parse(s.place.created_at) || 0, who: s.place.added_by_name, mine: !!s.place.mine, place: s.place });
+  }
+  for (const p of photoNews || []) {
+    const x = byReview.get(p.review_id);
+    if (x) ev.push({ kind: 'photos', at: Date.parse(p.at) || 0, who: displayName(x.r), mine: !!x.r.mine, place: x.s.place, n: p.n, review: x.r });
+  }
+  return ev.filter((e) => e.at).sort((a, b) => b.at - a.at);
+}
+// Когда: сегодня — время, вчера — «ВЧЕРА», раньше — дата.
+export function feedWhen(at, now = Date.now()) {
+  const d = new Date(at); const day = dayKey(d);
+  if (day === dayKey(new Date(now))) return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (day === dayKey(new Date(now - 864e5))) return 'ВЧЕРА';
+  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+// Что: звёзды, «НЕ МОЁ», «+3 ФОТО», «ХОЧЕТ» (без рода: сайт не знает, кто он или она).
+export const feedWhat = (e) => (e.kind === 'photos' ? `+${e.n} ФОТО` : e.kind === 'want' ? (e.mine ? 'ХОТИТЕ' : 'ХОЧЕТ') : `${e.stars ? '★'.repeat(e.stars) : 'НЕ МОЁ'}${e.kind === 'update' ? ' ИЗМ.' : ''}`);
+
 // Название на табло: заглавными, по словам в строки не длиннее n, не больше max строк (не влезло — «…»).
 export function boardLines(text, n, max = 2) {
   const lines = [];

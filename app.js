@@ -1,7 +1,7 @@
 import {
   SCALES, summarize, RATED_SORTS, searchSummaries, sortSummaries, findDuplicates,
   distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace, parseMapLink, MAP_APPS, fmtPrice, priceToPct, parsePrice,
-  KINDS, reelsOf, slotCandidates, matchHeld, jackpotOf, placeOfDay, goPrompt, boardLines, roomLink, readRoom,
+  KINDS, reelsOf, slotCandidates, matchHeld, jackpotOf, placeOfDay, goPrompt, boardLines, roomLink, readRoom, feedEvents, feedWhen, feedWhat,
 } from './logic.js';
 import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
@@ -248,7 +248,7 @@ function render() {
     const fr = $root.querySelector('#flash-retry'); if (fr) fr.onclick = async (e) => { e.preventDefault(); fr.textContent = 'обновляю…'; await refreshAfterWrite('Связь всё ещё плохая. Попробуйте позже.'); render(); }; }
 }
 // Загрузка: если база долго молчит, честно говорим об этом (запрос сам оборвётся по таймауту и покажет «Повторить»).
-const VIEWS = { news: () => viewNews(), errors: () => viewErrors(), menu: () => viewMenu(), list: () => viewList(), detail: () => viewDetail(), map: () => viewMap(), slot: () => viewSlot(), rate: () => viewRate(), me: () => viewMe(), invites: () => viewInvites(), editplace: () => viewEditPlace(), net: () => viewNet() };
+const VIEWS = { feed: () => viewFeed(), news: () => viewNews(), errors: () => viewErrors(), menu: () => viewMenu(), list: () => viewList(), detail: () => viewDetail(), map: () => viewMap(), slot: () => viewSlot(), rate: () => viewRate(), me: () => viewMe(), invites: () => viewInvites(), editplace: () => viewEditPlace(), net: () => viewNet() };
 DESK.addEventListener('change', () => { if (S.data && !S.gate && !S.err) render(); });
 
 // ---------- ПК-версия: панель слева и одна или две рабочие колонки ----------
@@ -263,6 +263,7 @@ function railHtml(v) {
       <span class="grow"><b>${esc(meName())}</b><small>${S.role === 'admin' ? 'админ' : 'участник'} · профиль</small></span></button>
     <button class="r-cta${v === 'slot' ? ' on' : ''}" data-act="go" data-view="slot"><span class="tag">01 · Слот-машина</span><span class="ttl">Выбрать<br>место</span><span class="letters" aria-hidden="true"><b>G</b><b>A</b><b>S</b></span></button>
     <nav class="r-list">${nav('list', 'Все оценённые', 'list', v === 'list' || v === 'detail' || v === 'map', `<small>${rated}</small>`)}${nav('rate', 'Оценить заведение', 'plus', v === 'rate')}${S.role === 'admin' ? nav('errors', 'Ошибки', 'warn', v === 'errors', `<small>${S.data?.err_count ?? ''}</small>`) : ''}</nav>
+    ${railFeedHtml()}
     ${isDemo ? '<div class="notice">Демо-режим: выдуманные примеры.</div>' : ''}
     <div class="r-foot"><button class="r-nav" data-act="theme">${themeIcon()}<span>Сменить тему</span></button>
       <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${netStatus()}</span></div>
@@ -283,14 +284,14 @@ function fixDeskHeight(dk) {
 }
 function renderDesk() {
   const v = cur.view === 'menu' ? 'list' : cur.view;
-  const two = v === 'list' || v === 'detail' || v === 'map';
+  const two = v === 'list' || v === 'detail' || v === 'map' || v === 'feed';
   const oldA = $root.querySelector('.dk.two .dk-a'); const keep = two && oldA ? oldA.scrollTop : 0; // список не прыгает наверх при выборе места
   document.body.classList.add('desk');
   $root.innerHTML = `<div class="dk ${two ? 'two' : 'one'} v-${v}" style="${deskStyle()}"><aside class="rail">${railHtml(v)}</aside><main class="dk-a"></main>${two ? '<section class="dk-b"></section>' : ''}</div>`;
   const A = $root.querySelector('.dk-a'); const B = $root.querySelector('.dk-b');
   fixDeskHeight($root.querySelector('.dk'));
   try {
-    if (two) { $app = A; viewList(); $app = B; if (v === 'detail') viewDetail(); else viewMapPane(); }
+    if (two) { $app = A; viewList(); $app = B; if (v === 'detail') viewDetail(); else if (v === 'feed') viewFeed(); else viewMapPane(); }
     else { $app = A; (VIEWS[v] || viewList)(); }
   } finally { $app = $root; }
   if (keep && A.isConnected) A.scrollTop = keep;
@@ -323,6 +324,37 @@ function viewGate() {
   };
 }
 
+// ---------- лента «Что нового» ----------
+// Новое = чужие события после прошлого захода (запоминается в этом браузере; при первом заходе — за последние 3 дня).
+const FEED_PREV = (() => { const v = Number(ls.get('gas_feed_seen')); return v > 0 ? v : Date.now() - 3 * 864e5; })();
+const feedNow = () => feedEvents(S.sums, S.data?.photo_news);
+const isNewEv = (e) => !e.mine && e.at > FEED_PREV;
+const markFeedSeen = () => ls.set('gas_feed_seen', String(Date.now()));
+const evWho = (e) => (e.mine ? 'Вы' : e.who);
+function feedBoardHtml(evs, limit) {
+  const list = evs.slice(0, limit); const nNew = evs.filter(isNewEv).length;
+  return `<div class="board feed"><div class="b-top"><span class="b-dot"></span><span class="grow b-ttl">ЧТО НОВОГО</span>${nNew ? `<span class="f-new">НОВЫХ: ${nNew}</span>` : ''}</div>
+    ${list.length ? `<div class="f-row f-head" aria-hidden="true"><span>ВРЕМЯ</span><span>КТО</span><span>ЧТО</span></div>
+    ${list.map((e) => `<button class="f-row${isNewEv(e) ? ' new' : ''}" data-act="go" data-view="detail" data-id="${e.place.id}"><span class="t">${feedWhen(e.at)}</span><span class="w">${esc(evWho(e).toUpperCase())}</span><span class="p">${esc(feedWhat(e))} <em>${esc(e.place.name.toUpperCase())}</em></span></button>`).join('')}`
+    : '<div class="f-row new"><span class="t">—</span><span class="w">ТИХО</span><span class="p">Пока ничего нового</span></div>'}
+    ${evs.length > list.length ? '<button class="f-more" data-act="go" data-view="feed">Вся лента</button>' : ''}</div>`;
+}
+// На ПК: коротко в панели слева (три последних), целиком — справа по «Вся лента».
+function railFeedHtml() {
+  const evs = feedNow(); const nNew = evs.filter(isNewEv).length;
+  if (!evs.length) return '';
+  markFeedSeen();
+  return `<div class="r-feed"><div class="r-fh"><span>Что нового</span>${nNew ? `<b>${nNew}</b>` : ''}</div>
+    ${evs.slice(0, 3).map((e) => `<button class="r-fi" data-act="go" data-view="detail" data-id="${e.place.id}"><span class="r-fa">${e.review ? reviewAvatar(e.review, { size: 20, label: evWho(e) }) : '<i></i>'}</span>
+      <span><b>${esc(evWho(e))}</b> · ${esc(e.place.name)} ${esc(feedWhat(e).replace(' ИЗМ.', '').toLowerCase())}</span></button>`).join('')}
+    <button class="r-fall" data-act="go" data-view="feed">Вся лента →</button></div>`;
+}
+function viewFeed() {
+  $app.innerHTML = `${bar('Что нового')}${feedBoardHtml(feedNow(), 60)}
+    <p class="small muted">Новые рецензии, правки, фото и «Хочу сходить» за всё время (фото — за 60 дней). Нажмите строку, чтобы открыть место.</p>`;
+  markFeedSeen();
+}
+
 // «Как сходили?»: на следующий день после «Едем!» в автомате (до недели), пока место не оценено или не нажато «Не ходили».
 const readTrip = () => { try { return JSON.parse(ls.get('gas_trip') || 'null'); } catch { return null; } };
 function askGoHtml() {
@@ -352,7 +384,9 @@ function viewMenu() {
         <span class="ttl">Карта</span></button>
     </div>
     <button class="tile rate" data-act="go" data-view="rate"><span class="plus">${ico('plus')}</span><span><b>Оценить заведение</b><small>новая или обновлённая рецензия</small></span></button>
+    ${feedBoardHtml(feedNow(), 6)}
     <div class="foot${S.online === false ? ' off' : ''}"><span class="dot"></span><span>${isDemo ? 'демо' : S.online === false ? 'нет связи с базой · показаны сохранённые данные' : S.online ? 'база на связи' : 'обновляю…'}</span><button class="ver" data-act="go" data-view="news">β ${VERSION}</button></div>`;
+  markFeedSeen();
 }
 
 function downloadBackup() {
