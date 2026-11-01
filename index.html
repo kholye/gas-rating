@@ -361,6 +361,37 @@ header.bar .btn.sm{flex:none}
 .wmain b{display:block;font-size:15px}
 .wmain small{display:block;font-size:12px;color:var(--mut);margin-top:2px}
 @media (prefers-reduced-motion: reduce){.b-dot,.fl.go{animation:none}}
+/* оценка сравнением: карточки со свайпом */
+.cmp{display:flex;flex-direction:column;gap:12px}
+.cmp-top{display:flex;justify-content:space-between}
+.cmp-bar{height:6px;border-radius:3px;background:var(--s2);overflow:hidden}
+.cmp-bar i{display:block;height:100%;background:var(--acc);border-radius:3px;transition:width .3s}
+.cmp-target{display:flex;align-items:center;gap:10px;border-radius:16px;border:1px solid var(--acc);background:var(--acc-soft);padding:10px 12px}
+.cmp-target b{display:block;font-size:16px;font-weight:800;line-height:1.15}
+.cmp-q{margin:4px 0 0;text-align:center;font-weight:800;font-size:21px;letter-spacing:-.02em}
+.cmp-stage{position:relative;height:min(58vh,470px);min-height:340px}
+.cmp-card{position:absolute;inset:0;border-radius:26px;border:1px solid var(--ln);background:var(--s1);overflow:hidden;display:flex;flex-direction:column;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+.cmp-card:active{cursor:grabbing}
+.cov{position:relative;display:block;flex:1;min-height:0;background:#121216 center/cover no-repeat;overflow:hidden}
+.cov .poster{position:absolute;inset:0;width:100%;height:100%;display:block}
+.cov.sm{flex:none;width:44px;height:44px;border-radius:12px}
+.cov-kind{position:absolute;left:14px;bottom:14px;font:500 11px var(--mono);letter-spacing:.1em;font-style:normal;background:#0E0E10;border-radius:8px;padding:5px 8px}
+.cmp-bd{padding:14px 16px 16px;display:flex;flex-direction:column;gap:4px}
+.cmp-bd b{font-size:24px;font-weight:800;letter-spacing:-.03em;line-height:1.1}
+.stamp{position:absolute;top:22px;padding:6px 12px;border-radius:10px;border:3px solid;font:800 18px var(--mono);letter-spacing:.08em;background:rgba(14,14,16,.65);opacity:0;pointer-events:none}
+.stamp.yes{left:18px;color:#C8F25A;border-color:#C8F25A;transform:rotate(-12deg)}
+.stamp.no{right:18px;color:#FF8A6B;border-color:#FF8A6B;transform:rotate(12deg)}
+.stamp.same{left:50%;top:40%;transform:translateX(-50%);color:#B3AAFF;border-color:#B3AAFF}
+.cmp-btns{display:flex;align-items:center;justify-content:center;gap:18px;margin-top:4px}
+.cb{width:62px;height:62px;border-radius:50%;border:1px solid var(--ln2);background:var(--s1);color:var(--ink);font-size:22px;font-weight:800;display:flex;align-items:center;justify-content:center;padding:0}
+.cb.no{color:var(--bad)}
+.cb.same{width:48px;height:48px;font-size:18px;color:var(--vio)}
+.cb.yes{width:72px;height:72px;background:var(--acc);border-color:var(--acc);color:var(--on-acc);font-size:26px}
+.cmp-intro{display:flex;flex-direction:column;gap:12px;padding-top:8px}
+.cmp-intro h2{margin:0;font-weight:800;font-size:34px;line-height:1.02;letter-spacing:-.04em}
+.cmp-intro p{margin:0;font-size:15px;line-height:1.5}
+.cmp-top-list{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:6px;font-weight:600}
+.dk .cmp,.dk .cmp-intro{max-width:520px}
 /* лента «Что нового»: табло под плитками (телефон) и коротко в панели (ПК) */
 .board.feed{margin-top:16px;gap:6px}
 .f-row{display:grid;grid-template-columns:44px 74px minmax(0,1fr);gap:8px;align-items:baseline;width:100%;border:0;background:none;padding:4px 0;text-align:left;font:500 11px var(--mono);color:#9A9AA6;opacity:.55}
@@ -461,6 +492,8 @@ button.f-row:hover{opacity:1}
 </script>
 <script defer src="vendor/leaflet/leaflet.js"></script>
 <script defer src="vendor/gsap/gsap.min.js"></script>
+<script defer src="vendor/gsap/Draggable.min.js"></script>
+<script defer src="vendor/gsap/InertiaPlugin.min.js"></script>
 <script type="module" src="app.js"></script>
 <noscript>Нужен включённый JavaScript.</noscript>
 </body>

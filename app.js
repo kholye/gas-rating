@@ -2,7 +2,9 @@ import {
   SCALES, summarize, RATED_SORTS, searchSummaries, sortSummaries, findDuplicates,
   distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace, parseMapLink, MAP_APPS, fmtPrice, priceToPct, parsePrice,
   KINDS, reelsOf, slotCandidates, matchHeld, jackpotOf, placeOfDay, goPrompt, boardLines, roomLink, readRoom, feedEvents, feedWhen, feedWhat,
+  readCmps, myOrder, cmpAdjustments, cmpStart, cmpNext, cmpAnswer, cmpTotal, cmpUnranked,
 } from './logic.js';
+import { posterSvg, kindColor } from './covers.js';
 import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
 import { VERSION, CHANGELOG } from './version.js';
@@ -243,12 +245,14 @@ function render() {
   if (S.gate) return viewGate();
   if (S.err) return viewError();
   if (!S.data) return viewLoading();
+  // обязательный первый раз: пока свои места не сравнены, вместо остальных экранов — сравнение
+  if (!FIRST_FREE.has(cur.view) && needFirst()) { cur = { view: 'compare', p: {}, d: cur.d }; history.replaceState(cur, ''); }
   if (DESK.matches) renderDesk(); else (VIEWS[cur.view] || viewMenu)();
   if (S.flash) { ($root.querySelector('.dk-b header') || $root.querySelector('header'))?.insertAdjacentHTML('afterend', `<div class="notice soft">${ico('info')}<span>${esc(S.flash)} <a href="#" id="flash-retry">Обновить</a></span></div>`); S.flash = '';
     const fr = $root.querySelector('#flash-retry'); if (fr) fr.onclick = async (e) => { e.preventDefault(); fr.textContent = 'обновляю…'; await refreshAfterWrite('Связь всё ещё плохая. Попробуйте позже.'); render(); }; }
 }
 // Загрузка: если база долго молчит, честно говорим об этом (запрос сам оборвётся по таймауту и покажет «Повторить»).
-const VIEWS = { feed: () => viewFeed(), news: () => viewNews(), errors: () => viewErrors(), menu: () => viewMenu(), list: () => viewList(), detail: () => viewDetail(), map: () => viewMap(), slot: () => viewSlot(), rate: () => viewRate(), me: () => viewMe(), invites: () => viewInvites(), editplace: () => viewEditPlace(), net: () => viewNet() };
+const VIEWS = { compare: () => viewCompare(), feed: () => viewFeed(), news: () => viewNews(), errors: () => viewErrors(), menu: () => viewMenu(), list: () => viewList(), detail: () => viewDetail(), map: () => viewMap(), slot: () => viewSlot(), rate: () => viewRate(), me: () => viewMe(), invites: () => viewInvites(), editplace: () => viewEditPlace(), net: () => viewNet() };
 DESK.addEventListener('change', () => { if (S.data && !S.gate && !S.err) render(); });
 
 // ---------- ПК-версия: панель слева и одна или две рабочие колонки ----------
@@ -951,7 +955,7 @@ function viewRate() {
     <input type="file" id="ph" accept="image/*" multiple ${R.photos.length >= 5 ? 'disabled' : ''}>
     <label class="lbl" for="cm">Комментарий</label><textarea id="cm" name="comment" maxlength="2000">${esc(R.comment)}</textarea>
     <div class="err" id="msg" role="alert"></div>
-    <button class="btn accent block" id="send" style="margin-top:14px">Отправить</button></form>`;
+    <button class="btn accent block" id="send" style="margin-top:14px">${formNeedsCompare() ? `Сравнить · ${cmpTotal(formSession())}` : 'Отправить'}</button></form>`;
 
   const f = $app.querySelector('#f'); const msg = f.querySelector('#msg');
   const host = $app; // на ПК форма живёт в колонке: перерисовываем именно её
@@ -1016,38 +1020,213 @@ function viewRate() {
 
   f.querySelector('#send').onclick = (e) => {
     e.preventDefault(); msg.textContent = '';
-    const miss = [];
-    if (!R.anon && !R.name.trim()) miss.push('имя (или «Анонимно»)');
-    if (R.mode === 'new') {
-      if (!R.np.name.trim()) miss.push('название'); if (!R.np.kind) miss.push('кухню'); if (!R.np.address.trim()) miss.push('адрес');
-      if (R.np.lat == null) miss.push('точку на карте');
-    } else if (!R.placeId) miss.push('заведение');
-    if (R.verdict == null) miss.push('общий вердикт');
-    SCALE_KEYS.forEach(([k, n]) => { if (R[k] == null) miss.push(n.toLowerCase()); });
-    if (R.toilet_present === undefined) miss.push('туалет (есть / нет / не помню)');
-    else if (R.toilet_present === true && R.toilet == null) miss.push('оценку туалета');
+    const miss = formMissing();
     if (miss.length) { msg.textContent = `Не заполнено: ${miss.join(', ')}.`; return; }
-    const btn = e.target; btn.disabled = true; btn.textContent = 'Отправляю…';
-    guard(async () => {
-      let id = R.placeId;
-      if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind, address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
-      await api.saveReview({
-        place_id: id, name: R.name.trim(), anon: R.anon, avatar_seed: R.anon ? null : S.seed, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
-        toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
-        price_from: R.price_from ?? null, price_to: R.price_to ?? null,
-      });
-      let failed = 0;
-      for (const [i, ph] of R.photos.entries()) {
-        btn.textContent = `Загружаю фото ${i + 1} из ${R.photos.length}…`;
-        try { await api.addPhoto(id, await toBase64(ph.blob), await toBase64(ph.thumb)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
-        URL.revokeObjectURL(ph.url);
-      }
-      S.anon = R.anon; ls.set('gas_anon', S.anon ? '1' : '0');
-      if (!R.anon) { S.name = R.name.trim(); ls.set('gas_name', S.name); }
-      R = null; await refreshAfterWrite('Рецензия сохранена, но список ещё не обновился: связь плохая.'); go('detail', { id }, true);
-      if (failed) alert(`Рецензия сохранена, но ${failed} фото не загрузились (возможно, уже 5 фото или нет связи). Добавьте их через «Изменить мою рецензию».`);
-    }, msg).finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Отправить'; } });
+    if (formNeedsCompare()) { CMP = { kind: 'form', s: formSession(), started: true }; go('compare'); return; } // «Отправить» — после сравнений
+    submitReview(e.target, msg, []);
   };
+}
+// Чего не хватает в форме рецензии.
+function formMissing() {
+  const miss = [];
+  if (!R.anon && !R.name.trim()) miss.push('имя (или «Анонимно»)');
+  if (R.mode === 'new') {
+    if (!R.np.name.trim()) miss.push('название'); if (!R.np.kind) miss.push('кухню'); if (!R.np.address.trim()) miss.push('адрес');
+    if (R.np.lat == null) miss.push('точку на карте');
+  } else if (!R.placeId) miss.push('заведение');
+  if (R.verdict == null) miss.push('общий вердикт');
+  SCALE_KEYS.forEach(([k, n]) => { if (R[k] == null) miss.push(n.toLowerCase()); });
+  if (R.toilet_present === undefined) miss.push('туалет (есть / нет / не помню)');
+  else if (R.toilet_present === true && R.toilet == null) miss.push('оценку туалета');
+  return miss;
+}
+// Сохранить рецензию (и фото), затем ответы сравнений: answers [{a, b, r}], где новое место пока записано как NEW_ID.
+async function submitReview(btn, msg, answers) {
+  const label = btn.textContent; btn.disabled = true; btn.textContent = 'Отправляю…';
+  await guard(async () => {
+    let id = R.placeId;
+    if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind, address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
+    await api.saveReview({
+      place_id: id, name: R.name.trim(), anon: R.anon, avatar_seed: R.anon ? null : S.seed, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
+      toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
+      price_from: R.price_from ?? null, price_to: R.price_to ?? null,
+    });
+    let failed = 0;
+    for (const [i, ph] of R.photos.entries()) {
+      btn.textContent = `Загружаю фото ${i + 1} из ${R.photos.length}…`;
+      try { await api.addPhoto(id, await toBase64(ph.blob), await toBase64(ph.thumb)); } catch (err) { if (err instanceof ApiError && err.kind === 'bad_code') throw err; failed++; }
+      URL.revokeObjectURL(ph.url);
+    }
+    if (answers.length) {
+      btn.textContent = 'Сохраняю сравнения…';
+      const fix = (x) => (x === NEW_ID ? id : x);
+      await saveCmps(answers.map((x) => ({ a: fix(x.a), b: fix(x.b), r: x.r })), [...new Set([...myPlaceIds(), id])]);
+    }
+    S.anon = R.anon; ls.set('gas_anon', S.anon ? '1' : '0');
+    if (!R.anon) { S.name = R.name.trim(); ls.set('gas_name', S.name); }
+    R = null; CMP = null; await refreshAfterWrite('Рецензия сохранена, но список ещё не обновился: связь плохая.'); go('detail', { id }, true);
+    if (failed) alert(`Рецензия сохранена, но ${failed} фото не загрузились (возможно, уже 5 фото или нет связи). Добавьте их через «Изменить мою рецензию».`);
+  }, msg);
+  if (btn.isConnected) { btn.disabled = false; btn.textContent = label; }
+}
+
+// ---------- оценка сравнением (свайпы) ----------
+// Карточка — место, где вы уже были; вправо: «оно понравилось больше», влево: «меньше», вверх: «одинаково».
+// Ответы дают личный порядок мест (Брэдли–Терри), он сдвигает балл ваших рецензий не больше чем на ±RATING.cmpMax.
+const NEW_ID = -1; // новое место, у которого ещё нет номера в базе
+let CMP = null; // { kind: 'form' | 'first', s: сессия, started, ranked, pending, total, done, unsaved }
+const cmpReady = () => !!S.data && Array.isArray(S.data.my_cmp); // без migration-17 сравнения выключены
+const myPlaceIds = () => S.sums.filter((s) => s.reviews.some((r) => r.mine)).map((s) => s.place.id);
+const myCmps = () => readCmps(S.data?.my_cmp);
+function formSession() {
+  const target = R.mode === 'new' ? NEW_ID : R.placeId;
+  return cmpStart(target, myPlaceIds().filter((id) => id !== target), myCmps());
+}
+const formNeedsCompare = () => cmpReady() && !!R && cmpNext(formSession()) != null;
+// Сохранить ответы и пересчитать поправки ко всем своим рецензиям.
+async function saveCmps(items, ids) {
+  const all = [...myCmps(), ...items];
+  const adj = cmpAdjustments(ids, all);
+  await api.saveComparisons(items, [...adj].map(([place_id, v]) => ({ place_id, adj: v })));
+  if (S.data) S.data.my_cmp = all.map((c) => [c.a, c.b, c.r]); // пока данные не обновились, считаем уже с новыми ответами
+}
+// Обязательный первый раз: свои места, которые ещё ни разу не сравнивались.
+const needFirst = () => cmpReady() && cmpUnranked(myPlaceIds(), myCmps()).length > 0;
+const FIRST_FREE = new Set(['compare', 'net', 'news', 'me', 'invites', 'errors']); // экраны, куда пускаем и до сравнений
+function startFirst() {
+  const my = myPlaceIds(); const cmps = myCmps();
+  const ranked = myOrder(my, cmps); const pending = cmpUnranked(my, cmps);
+  // самые любимые по звёздам — первыми
+  const verdict = (id) => sumById(id)?.reviews.find((r) => r.mine)?.verdict ?? 0;
+  pending.sort((a, b) => verdict(b) - verdict(a));
+  if (!ranked.length) ranked.push(pending.shift());
+  const target = pending.shift();
+  CMP = { kind: 'first', ranked, pending, s: cmpStart(target, ranked, cmps, { first: true }), started: false, total: estimateFirst(ranked.length, pending.length + 1), done: 0 };
+}
+const estimateFirst = (have, add) => { let t = 0; for (let k = 0; k < add; k++) t += Math.ceil(Math.log2(have + k + 1)); return t; };
+const plural = (n, one, few, many) => (n % 10 === 1 && n % 100 !== 11 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many);
+
+function viewCompare() {
+  if (!CMP && needFirst()) startFirst();
+  if (!CMP || (CMP.kind === 'form' && !R)) { CMP = null; return go('menu', {}, true); }
+  drawCompare($app);
+}
+function placeCover(s, cls = '') {
+  const ph = bannerPhotos.get(s.place.id);
+  return ph ? `<span class="cov ${cls}" style="background-image:url('${ph}')"></span>`
+    : `<span class="cov ${cls}">${posterSvg(s.place, { label: s.place.name })}${cls ? '' : `<i class="cov-kind" style="color:${kindColor(s.place.kind)}">${esc((s.place.kind || 'место').toUpperCase())}</i>`}</span>`;
+}
+function drawCompare(host) {
+  const prev = $app; $app = host;
+  try { drawCompareIn(host); } finally { $app = prev; }
+}
+function drawCompareIn(host) {
+  const c = CMP; const first = c.kind === 'first';
+  if (S.keyFn) { document.removeEventListener('keydown', S.keyFn); S.keyFn = null; }
+  if (first && !c.started) {
+    const n = myPlaceIds().length;
+    $app.innerHTML = `${bar('Сравните свои места', false)}<div class="cmp-intro">
+      <span class="label" style="color:var(--acc-text)">Новое в G.A.S.</span>
+      <h2>Что понравилось больше?</h2>
+      <p>У вас ${n} ${plural(n, 'рецензия', 'рецензии', 'рецензий')}. Пара минут: смахивайте карточки — вправо, если место понравилось больше, влево — если меньше, вверх — одинаково. Так рейтинг станет точнее, а звёзды останутся как были.</p>
+      <div class="row wrap"><span class="chip">~${c.total} ${plural(c.total, 'свайп', 'свайпа', 'свайпов')}</span><span class="chip">один раз</span><span class="chip">можно прервать</span></div>
+      <button class="btn accent block" id="cgo" style="margin-top:18px">Начать</button>
+      <p class="small muted">Пропустить нельзя, но можно закрыть сайт — продолжите со следующего входа.</p></div>`;
+    $app.querySelector('#cgo').onclick = () => { c.started = true; drawCompare(host); };
+    return;
+  }
+  const other = cmpNext(c.s);
+  if (other == null) { finishCompare(host); return; }
+  const target = c.s.target === NEW_ID ? { place: { id: NEW_ID, name: R?.np.name || 'Новое место', kind: R?.np.kind || '' }, reviews: [] } : sumById(c.s.target);
+  const myV = (s) => s?.reviews.find((r) => r.mine)?.verdict;
+  const tVerdict = c.kind === 'form' ? R?.verdict : myV(target);
+  const step = first ? c.done + c.s.answers.length : c.s.answers.length;
+  const total = Math.max(step + 1, first ? c.total : cmpTotal(c.s));
+  const o = sumById(other);
+  $app.innerHTML = `${bar(first ? 'Сравните свои места' : 'Сравнение', !first)}<div class="cmp">
+    <div class="cmp-top"><span class="label">${step + 1} из ~${total}</span><span class="label">вверх — одинаково</span></div>
+    <div class="cmp-bar"><i style="width:${Math.min(100, (step / total) * 100)}%"></i></div>
+    <div class="cmp-target">${placeCover(target, 'sm')}
+      <span class="grow"><span class="label" style="color:var(--acc-text)">${first ? 'Куда поставить' : 'Ваше новое'}</span><b>${esc(target.place.name)}</b></span>${tVerdict != null ? stars(tVerdict) : ''}</div>
+    <h2 class="cmp-q">Это нравится больше?</h2>
+    <div class="cmp-stage"><div class="cmp-card" id="ccard">${placeCover(o)}
+      <div class="cmp-bd"><b>${esc(o.place.name)}</b><span class="small muted">${esc(o.place.kind || 'место')} · вы были ${esc(ago(o.reviews.find((r) => r.mine)?.updated_at || ''))}</span>${myV(o) != null ? stars(myV(o)) : ''}</div>
+      <span class="stamp yes" id="syes">БОЛЬШЕ</span><span class="stamp no" id="sno">МЕНЬШЕ</span><span class="stamp same" id="ssame">ОДИНАКОВО</span></div></div>
+    <div class="cmp-btns"><button class="cb no" data-ans="1" aria-label="Это нравится меньше">✕</button><button class="cb same" data-ans="0" aria-label="Одинаково">=</button><button class="cb yes" data-ans="-1" aria-label="Это нравится больше">♥</button></div>
+    <div class="small muted dk-only" style="text-align:center">Клавиши: ← меньше · → больше · ↑ одинаково</div></div>`;
+  prefetchCovers(c, host);
+  const card = $app.querySelector('#ccard'); const g = G();
+  let busy = false;
+  // r: 1 — новое лучше (карточка «меньше»), -1 — карточка лучше, 0 — одинаково
+  const answer = (r) => {
+    if (busy || !card.isConnected) return; busy = true; sound('swipe'); buzz(10);
+    const fly = r === 0 ? { y: -innerHeight, rotation: 0 } : { x: (r < 0 ? 1 : -1) * innerWidth, rotation: r < 0 ? 24 : -24 };
+    let done = false;
+    const next = () => { if (done) return; done = true; c.s = cmpAnswer(c.s, other, r); if (host.isConnected) drawCompare(host); };
+    if (g && !calm()) { g.to(card, { ...fly, duration: 0.32, ease: 'power2.in', overwrite: true, onComplete: next }); setTimeout(next, 700); } // страховка: вкладка в фоне не крутит анимацию
+    else next();
+  };
+  host.querySelectorAll('[data-ans]').forEach((b) => { b.onclick = () => answer(Number(b.dataset.ans)); });
+  const stamp = (id, v) => { const el = host.querySelector(id); if (el) el.style.opacity = String(Math.max(0, Math.min(1, v))); };
+  const stamps = (x, y) => { stamp('#syes', x / 110); stamp('#sno', -x / 110); stamp('#ssame', -y / 90 - Math.abs(x) / 200); };
+  if (g && window.Draggable) {
+    if (!S.dragReady) { g.registerPlugin(window.Draggable, ...(window.InertiaPlugin ? [window.InertiaPlugin] : [])); S.dragReady = true; }
+    window.Draggable.create(card, {
+      type: 'x,y',
+      onDrag() { g.set(card, { rotation: this.x / 18 }); stamps(this.x, this.y); },
+      onRelease() {
+        const vx = window.InertiaPlugin?.getVelocity?.(card, 'x') || 0;
+        if (this.x > 110 || vx > 900) answer(-1);
+        else if (this.x < -110 || vx < -900) answer(1);
+        else if (this.y < -90) answer(0);
+        else { g.to(card, { x: 0, y: 0, rotation: 0, duration: 0.45, ease: 'elastic.out(1,0.6)' }); stamps(0, 0); }
+      },
+    });
+    try { window.InertiaPlugin?.track?.(card, 'x'); } catch { /* без скорости — только по расстоянию */ }
+  }
+  S.keyFn = (e) => { const k = { ArrowRight: -1, ArrowLeft: 1, ArrowUp: 0 }[e.key]; if (k === undefined || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return; e.preventDefault(); answer(k); };
+  document.addEventListener('keydown', S.keyFn);
+}
+// обложки (первое фото) для мест сессии — одним запросом, как у баннеров; пришли — перерисовываем карточку
+async function prefetchCovers(c, host) {
+  if (c.coversAsked) return; c.coversAsked = true;
+  const ids = [...new Set([...(c.s.order || []), ...(c.s.queue || []), ...(c.ranked || []), ...(c.pending || []), ...myPlaceIds(), c.s.target])].filter((id) => id > 0 && !bannerPhotos.has(id));
+  if (!ids.length) return;
+  try {
+    const got = await api.getCovers(ids); ids.forEach((id) => bannerPhotos.set(id, null)); got.forEach((x) => bannerPhotos.set(x.place_id, `data:image/jpeg;base64,${x.data}`));
+    if (got.length && host.isConnected && CMP === c && cur.view === 'compare') drawCompare(host);
+  } catch { /* без фото — постеры */ }
+}
+function finishCompare(host) {
+  const c = CMP;
+  if (c.kind === 'first') {
+    // место встало в личный порядок — сохраняем сразу (если закроют сайт, продолжат со следующего входа)
+    const s = c.s; const ranked = [...s.order.slice(0, s.lo), s.target, ...s.order.slice(s.lo)];
+    c.done += s.answers.length;
+    if (s.answers.length) { const items = s.answers; saveCmps(items, myPlaceIds()).catch(() => { c.unsaved = (c.unsaved || []).concat(items); }); }
+    c.ranked = ranked;
+    if (c.pending.length) { const t = c.pending.shift(); c.s = cmpStart(t, ranked, myCmps().concat(c.unsaved || [], s.answers), { first: true }); drawCompare(host); return; }
+    $app.innerHTML = `${bar('Сравните свои места', false)}<div class="cmp-intro"><h2>Готово!</h2><p>Ваш личный топ:</p>
+      <ol class="cmp-top-list">${ranked.map((id) => `<li>${esc(sumById(id)?.place.name || '')}</li>`).join('')}</ol>
+      <div class="err" id="cmsg"></div><button class="btn accent block" id="cdone">К сайту</button></div>`;
+    sound('win');
+    $app.querySelector('#cdone').onclick = () => guard(async () => {
+      if (c.unsaved?.length) { await saveCmps(c.unsaved, myPlaceIds()); c.unsaved = []; }
+      CMP = null; await refreshAfterWrite('Сравнения сохранены, но данные ещё не обновились: связь плохая.'); go('menu', {}, true);
+    }, $app.querySelector('#cmsg'));
+    return;
+  }
+  // форма: показываем, куда встало место, и только теперь — «Отправить»
+  const ids = [...myPlaceIds().filter((id) => id !== c.s.target), c.s.target];
+  const order = myOrder(ids, [...myCmps(), ...c.s.answers]); const pos = order.indexOf(c.s.target) + 1;
+  const name = c.s.target === NEW_ID ? R?.np.name || 'Новое место' : sumById(c.s.target)?.place.name || '';
+  $app.innerHTML = `${bar('Сравнение')}<div class="cmp-intro"><h2>Готово!</h2>
+    <p>${esc(name)} — ${pos ? `${pos}-е место из ${order.length} у вас` : 'сравнения сохранятся вместе с рецензией'}.</p>
+    <div class="err" id="cmsg"></div><button class="btn accent block" id="csend">Отправить рецензию</button>
+    <button class="btn block" id="credo" style="margin-top:10px">Сравнить заново</button></div>`;
+  sound('win');
+  $app.querySelector('#csend').onclick = (e) => { if (!R) return go('rate', {}, true); submitReview(e.currentTarget, host.querySelector('#cmsg'), c.s.answers); };
+  $app.querySelector('#credo').onclick = () => { c.s = formSession(); drawCompare(host); };
 }
 
 // ---------- автомат «Табло» ----------
@@ -1076,7 +1255,7 @@ async function sound(kind) {
   try {
     if (!SND.fx) { const m = await import('./vendor/zzfx/ZzFX.js'); m.ZZFX.volume = 0.25; SND.fx = m.zzfx; }
     const p = { tick: [0.25, 0, 1900, 0, 0, 0.012, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.4], stop: [0.7, 0, 180, 0, 0.02, 0.07, 2, 0, 0, 0, 0, 0, 0, 1.5],
-      win: [0.8, 0, 520, 0.01, 0.12, 0.25, 0, 1.2, 0, 0, 260, 0.07, 0.09], jack: [1, 0, 660, 0.02, 0.3, 0.5, 0, 1, 0, 0, 330, 0.06, 0.1, 0, 0, 0, 0.05] }[kind];
+      win: [0.8, 0, 520, 0.01, 0.12, 0.25, 0, 1.2, 0, 0, 260, 0.07, 0.09], swipe: [0.35, 0.05, 420, 0.01, 0.02, 0.09, 4, 0, -12], jack: [1, 0, 660, 0.02, 0.3, 0.5, 0, 1, 0, 0, 330, 0.06, 0.1, 0, 0, 0, 0.05] }[kind];
     if (p) SND.fx(...p);
   } catch { SND.on = false; } // без звука автомат работает так же
 }

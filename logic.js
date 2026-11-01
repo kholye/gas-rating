@@ -33,6 +33,9 @@ export const RATING = {
   poolMin: 6.5,        // с какого итогового балла место попадает в слот-машину
   qualityGap: 2.5,     // разброс качества (из 10), с которого мнения считаются расходящимися
   scaleGap: 3,         // разброс одной шкалы (из 5), с которого мнения считаются расходящимися
+  cmpMax: 0.5,         // на сколько (из 10) сравнения «что больше понравилось» могут сдвинуть балл рецензии вверх или вниз
+  cmpAll: 10,          // до стольких своих мест новое сравнивается со всеми; больше — около cmpPairs пар
+  cmpPairs: 8,
 };
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 
@@ -46,7 +49,8 @@ export function qualityOf(r) {
   return w ? (sum / w - 1) * 2.5 : 0;
 }
 const verdict10 = (r) => (r.verdict * 10) / 3;
-export const reviewScore = (r) => RATING.qualityShare * qualityOf(r) + (1 - RATING.qualityShare) * verdict10(r);
+// + поправка по сравнениям автора (свайпы): его любимое место из всех +cmpMax, нелюбимое −cmpMax; хранится в рецензии (cmp_adj)
+export const reviewScore = (r) => RATING.qualityShare * qualityOf(r) + (1 - RATING.qualityShare) * verdict10(r) + clamp(Number(r.cmp_adj) || 0, -RATING.cmpMax, RATING.cmpMax);
 const authorKey = (r) => (r.author_name ? r.author_name.trim().toLowerCase() : null);
 
 // Контекст расчёта по всем рецензиям: общий средний балл и поправка на строгость каждого автора (по имени).
@@ -320,6 +324,81 @@ export function feedWhen(at, now = Date.now()) {
 }
 // Что: звёзды, «НЕ МОЁ», «+3 ФОТО», «ХОЧЕТ» (без рода: сайт не знает, кто он или она).
 export const feedWhat = (e) => (e.kind === 'photos' ? `+${e.n} ФОТО` : e.kind === 'want' ? (e.mine ? 'ХОТИТЕ' : 'ХОЧЕТ') : `${e.stars ? '★'.repeat(e.stars) : 'НЕ МОЁ'}${e.kind === 'update' ? ' ИЗМ.' : ''}`);
+
+// ---- Оценка сравнением (свайпы) ----
+// Ответ: { a, b, r } — r = 1: a понравилось больше, -1: b больше, 0: одинаково. В get_all свои ответы приходят как my_cmp: [lo, hi, res].
+export const readCmps = (raw) => (raw || []).map((x) => (Array.isArray(x) ? { a: x[0], b: x[1], r: x[2] } : x));
+const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
+// Сила мест по модели Брэдли–Терри (итерации MM, Hunter 2004). Ничья — по полпобеды каждому. К каждому месту подмешана
+// одна ничья с воображаемым соперником силы 1, чтобы место без поражений не уходило в бесконечность.
+export function btStrengths(ids, cmps, iters = 300) {
+  const idx = new Map(ids.map((id, i) => [id, i])); const n = ids.length;
+  const W = new Array(n).fill(0.5); const games = [];
+  for (const c of cmps) {
+    const i = idx.get(c.a); const j = idx.get(c.b); if (i == null || j == null || i === j) continue;
+    games.push([i, j]);
+    if (c.r > 0) W[i] += 1; else if (c.r < 0) W[j] += 1; else { W[i] += 0.5; W[j] += 0.5; }
+  }
+  let p = new Array(n).fill(1);
+  for (let t = 0; t < iters; t++) {
+    const den = p.map((x) => 1 / (x + 1));
+    for (const [i, j] of games) { const d = 1 / (p[i] + p[j]); den[i] += d; den[j] += d; }
+    p = p.map((_, i) => W[i] / den[i]);
+  }
+  return new Map(ids.map((id, i) => [id, p[i]]));
+}
+// Личный порядок мест: от самого любимого. Места без единого сравнения в конец не попадают — их просто нет в ответе.
+export function myOrder(ids, cmps) {
+  const seen = new Set(); for (const c of cmps) { seen.add(c.a); seen.add(c.b); }
+  const xs = ids.filter((id) => seen.has(id)); const s = btStrengths(xs, cmps);
+  return xs.sort((a, b) => s.get(b) - s.get(a) || a - b);
+}
+// Поправки к рецензиям автора: самое любимое +max, самое нелюбимое −max, остальные ровно между (равная сила — равная поправка).
+export function cmpAdjustments(ids, cmps, max = RATING.cmpMax) {
+  const order = myOrder(ids, cmps); const s = btStrengths(order, cmps); const m = order.length; const out = new Map(ids.map((id) => [id, 0]));
+  if (m < 2) return out;
+  for (let i = 0; i < m;) {
+    let j = i; while (j + 1 < m && Math.abs(s.get(order[j + 1]) - s.get(order[i])) < 1e-6 * s.get(order[i])) j++;
+    const rank = (i + j) / 2; for (let k = i; k <= j; k++) out.set(order[k], Math.round(max * (1 - (2 * rank) / (m - 1)) * 1000) / 1000);
+    i = j + 1;
+  }
+  return out;
+}
+// Сессия сравнений для места target среди своих мест others.
+// До RATING.cmpAll мест — вопрос про каждое (кроме пар, на которые уже отвечали). Больше — вставка делением пополам в личный
+// порядок, затем ближайшие соседи, всего около RATING.cmpPairs вопросов. first = первый раз (обязательный экран): только вставка.
+export function cmpStart(target, others, cmps, { first = false } = {}) {
+  const known = new Set(cmps.map((c) => pairKey(c.a, c.b)));
+  if (!first && others.length <= RATING.cmpAll) return { target, mode: 'all', queue: others.filter((o) => !known.has(pairKey(target, o))), answers: [] };
+  const order = myOrder(others, cmps); const rest = others.filter((o) => !order.includes(o));
+  const full = [...order, ...rest];
+  return { target, mode: 'insert', order: full, lo: 0, hi: full.length, fill: !first, answers: [] };
+}
+export function cmpNext(s) {
+  if (s.mode === 'all') return s.queue[s.answers.length] ?? null;
+  if (s.lo < s.hi) return s.order[Math.floor((s.lo + s.hi) / 2)];
+  if (!s.fill || s.answers.length >= RATING.cmpPairs) return null;
+  const asked = new Set(s.answers.map((x) => x.b));
+  for (let d = 0; d < s.order.length; d++) for (const k of [s.lo - 1 - d, s.lo + d]) { const o = s.order[k]; if (o != null && !asked.has(o)) return o; }
+  return null;
+}
+// r: 1 — target понравилось больше, -1 — other больше, 0 — одинаково.
+export function cmpAnswer(s, other, r) {
+  const answers = [...s.answers, { a: s.target, b: other, r }];
+  if (s.mode !== 'insert' || s.lo >= s.hi) return { ...s, answers };
+  const mid = Math.floor((s.lo + s.hi) / 2);
+  return r > 0 ? { ...s, answers, hi: mid } : r < 0 ? { ...s, answers, lo: mid + 1 } : { ...s, answers, lo: mid, hi: mid };
+}
+// Примерно сколько вопросов в сессии (для «3 из ~8»).
+export const cmpTotal = (s) => (s.mode === 'all' ? s.queue.length
+  : Math.max(s.answers.length + (cmpNext(s) == null ? 0 : 1), s.fill ? Math.min(s.order.length, RATING.cmpPairs) : Math.ceil(Math.log2(s.order.length + 1))));
+// Какие свои места ещё ни разу не сравнивались (обязательный первый раз, если своих мест 2 и больше).
+export function cmpUnranked(myIds, cmps) {
+  if (myIds.length < 2) return [];
+  const seen = new Set(); for (const c of cmps) { seen.add(c.a); seen.add(c.b); }
+  return myIds.filter((id) => !seen.has(id));
+}
 
 // Название на табло: заглавными, по словам в строки не длиннее n, не больше max строк (не влезло — «…»).
 export function boardLines(text, n, max = 2) {

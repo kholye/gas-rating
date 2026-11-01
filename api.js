@@ -95,6 +95,8 @@ const live = (getCode, getAuthor, trouble = () => {}) => {
     roomGet: (id) => call('room_get', { p_id: id }, 12000),
     roomSpin: (id, seen, placeId, reels) => call('room_spin', { p_id: id, p_seen: seen, p_place_id: placeId, p_reels: reels }),
     roomVeto: (id, n) => call('room_veto', { p_id: id, p_n: n }),
+    // оценка сравнением: ответы [{a, b, r}] и поправки к своим рецензиям [{place_id, adj}] (local/migration-17.sql)
+    saveComparisons: (items, adj) => call('save_comparisons', { p_items: items, p_adj: adj }),
   };
 };
 
@@ -151,7 +153,21 @@ const demo = (getCode, getAuthor) => {
       return structuredClone({
         role: role(), places: mem.places.map(({ added_by, ...p }) => ({ ...p, mine: !!added_by && added_by === me, added_by_name: added_by ? DEMO_NAMES[added_by] || 'Вы' : null })),
         reviews: mem.reviews.map(({ author, ...r }) => ({ ...r, mine: author === me, ...(adm ? { author } : {}) })),
+        my_cmp: (mem.cmps || []).filter((c) => c.author === me).map((c) => [c.lo, c.hi, c.res]),
       });
+    },
+    saveComparisons: async (items, adj) => {
+      const me = getAuthor(); mem.cmps = mem.cmps || []; let n = 0;
+      const has = (pid) => mem.reviews.some((r) => r.place_id === pid && r.author === me);
+      for (const { a, b, r } of items) {
+        if (a === b || ![-1, 0, 1].includes(r)) throw new ApiError('rejected', 'bad_items');
+        if (!has(a) || !has(b)) continue;
+        const lo = Math.min(a, b); const hi = Math.max(a, b); const res = a < b ? r : -r;
+        const old = mem.cmps.find((c) => c.author === me && c.lo === lo && c.hi === hi);
+        if (old) old.res = res; else mem.cmps.push({ author: me, lo, hi, res }); n++;
+      }
+      for (const { place_id, adj: v } of adj || []) { const rv = mem.reviews.find((r) => r.place_id === place_id && r.author === me); if (rv) rv.cmp_adj = Math.max(-1, Math.min(1, v)); }
+      commit(); return n;
     },
     savePlace: async (p) => {
       if (p.id == null) { const id = mem.next++; mem.places.push({ ...p, id, created_at: new Date().toISOString(), added_by: getAuthor() }); commit(); return id; }
