@@ -113,12 +113,20 @@ const barsHtml = (sc, keys = SCALES.map(([k]) => k)) => `<div class="bars">${key
 // Цены в карточке места: средний диапазон крупно и шкала (серые полоски — каждый автор, лаймовая — средний).
 function priceHtml(s) {
   const txt = fmtPrice(s.price); if (!txt) return '';
-  const bar = (f, t, cls) => { const a = priceToPct(f ?? t); const b = priceToPct(t ?? f); return `<i class="${cls}" style="left:${a}%;width:${Math.max(1.5, b - a)}%"></i>`; };
+  // «от 2 000» — полоска от 2 000 до конца шкалы, «до 500» — от нуля до 500
+  const bar = (f, t, cls) => { const a = f == null ? 0 : priceToPct(f); const b = t == null ? 100 : priceToPct(t); return `<i class="${cls}${f == null || t == null ? ' open' : ''}" style="left:${a}%;width:${Math.max(1.5, b - a)}%"></i>`; };
   const own = s.reviews.filter((r) => r.price_from != null || r.price_to != null).map((r) => bar(r.price_from, r.price_to, 'pr-one')).join('');
   return `<div class="card pricebox"><div class="pr-head"><span class="label">Цены · на человека</span><b>${txt}</b></div>
     <div class="pr-scale"><span class="pr-line"></span>${own}${bar(s.price.from, s.price.to, 'pr-avg')}</div>
     <div class="pr-ticks"><span>0</span><span style="left:40%">1 000</span><span style="left:70%">2 500</span><span style="left:100%">5 000+</span></div>
     <div class="small muted" style="margin-top:8px">${s.price.n > 1 ? `Средний диапазон по ${s.price.n} рецензиям.` : 'По одной рецензии.'} На итоговый балл не влияет.</div></div>`;
+}
+// Цены в чипе: «₽» отдельно и тире с пробелами, чтобы «1 000 – 2 000» не сливалось в одну строку цифр
+function priceChip(p) {
+  if (!fmtPrice(p)) return '';
+  const n = (x) => String(x).replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009');
+  const body = p.from != null && p.to != null ? (p.from === p.to ? n(p.from) : `${n(p.from)}<em>–</em>${n(p.to)}`) : p.from != null ? `<small>от</small> ${n(p.from)}` : `<small>до</small> ${n(p.to)}`;
+  return `<span class="chip price"><i>₽</i>${body}</span>`;
 }
 const toiletStat = (r) => (r.toilet_present === true && r.toilet != null ? `Туалет ${r.toilet}` : r.toilet_present === false ? 'Туалета нет' : '');
 // Рецензия как пост: аватар с линией «ветки», имя, давность, вердикт, текст, фото, показатели.
@@ -383,15 +391,17 @@ function viewErrors() {
     <div class="row wrap" style="margin-bottom:12px"><button class="btn accent" id="ecopy" disabled>Скопировать все</button><button class="btn danger" id="eclear" disabled>Очистить</button></div>
     <div class="err" id="msg"></div><div id="elist"><p class="muted">Загружаю…</p></div>`;
   const msg = $app.querySelector('#msg'); let text = '';
+  const el = $app.querySelector('#elist'); const ecopy = $app.querySelector('#ecopy'); const eclear = $app.querySelector('#eclear');
   const paint = async () => {
     let list;
-    try { list = await api.listErrors(); } catch { $app.querySelector('#elist').innerHTML = '<p class="err">Не удалось загрузить журнал.</p>'; return; }
+    try { list = await api.listErrors(); } catch { if (el.isConnected) el.innerHTML = '<p class="err">Не удалось загрузить журнал.</p>'; return; }
+    if (!el.isConnected) return; // пока грузилось, открыли другой экран
     if (S.data) S.data.err_count = list.length;
     const t = (x) => new Date(x.at).toLocaleString('ru');
     text = list.map((x) => `[${t(x)}] v${x.version || '?'} · ${x.who} · ${x.kind}: ${x.message}\n${x.detail || ''}\n${x.ua || ''}`).join('\n\n');
-    $app.querySelector('#elist').innerHTML = list.length ? list.map((x) => `<div class="card errc"><div class="label">${esc(t(x))} · ${esc(x.who)} · v${esc(x.version || '?')} · ${esc(x.kind)}</div>
+    el.innerHTML = list.length ? list.map((x) => `<div class="card errc"><div class="label">${esc(t(x))} · ${esc(x.who)} · v${esc(x.version || '?')} · ${esc(x.kind)}</div>
       <p style="margin:8px 0 0;font-weight:600">${esc(x.message)}</p>${x.detail ? `<pre>${esc(x.detail)}</pre>` : ''}<div class="small muted">${esc(x.ua || '')}</div></div>`).join('') : '<p class="muted">Ошибок нет.</p>';
-    $app.querySelector('#ecopy').disabled = !list.length; $app.querySelector('#eclear').disabled = !list.length;
+    ecopy.disabled = !list.length; eclear.disabled = !list.length;
   };
   $app.querySelector('#ecopy').onclick = async () => { try { await navigator.clipboard.writeText(text); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { msg.style.color = ''; msg.innerHTML = '<textarea readonly id="etxt" style="min-height:160px"></textarea>'; const ta = msg.querySelector('#etxt'); ta.value = text; ta.select(); } };
   $app.querySelector('#eclear').onclick = () => confirm('Очистить журнал ошибок?') && guard(async () => { await api.clearErrors(); await paint(); }, msg);
@@ -405,7 +415,7 @@ function viewNet() {
     <div class="card"><div id="netout" class="net"><p class="muted">Нажмите «Проверить».</p></div></div>
     <button class="btn accent block" id="netgo">Проверить</button>
     <button class="btn block" id="netcopy" style="margin-top:10px" disabled>Скопировать результат</button><div class="err" id="msg"></div>`;
-  const out = $app.querySelector('#netout'); const msg = $app.querySelector('#msg'); let text = '';
+  const out = $app.querySelector('#netout'); const msg = $app.querySelector('#msg'); const copyBtn = $app.querySelector('#netcopy'); let text = '';
   const kb = (b) => `${(b / 1024).toFixed(1).replace('.', ',')} КБ`;
   $app.querySelector('#netgo').onclick = async (e) => {
     const btn = e.target; btn.disabled = true; out.innerHTML = ''; text = `G.A.S. проверка связи ${new Date().toLocaleString('ru')}\n${navigator.userAgent}\n`;
@@ -428,9 +438,9 @@ function viewNet() {
     const verdict = isDemo ? 'Демо-режим: база не проверялась.' : site ? 'Похоже, плохой интернет вообще.' : good.length === routes().length ? 'Всё доходит.'
       : good.length ? `Работает путь «${label[good[0]]}»: сайт сам будет ходить им.` : 'База недоступна ни одним путём с этой сети. Пришлите этот результат админу.';
     out.insertAdjacentHTML('beforeend', `<p><b>${esc(verdict)}</b></p>`); text += verdict + '\n';
-    btn.disabled = false; $app.querySelector('#netcopy').disabled = false;
+    btn.disabled = false; copyBtn.disabled = false;
   };
-  $app.querySelector('#netcopy').onclick = async () => { try { await navigator.clipboard.writeText(text); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { msg.style.color = ''; msg.textContent = 'Не удалось скопировать: сделайте снимок экрана.'; } };
+  copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(text); msg.style.color = 'var(--acc-text)'; msg.textContent = 'Скопировано.'; } catch { msg.style.color = ''; msg.textContent = 'Не удалось скопировать: сделайте снимок экрана.'; } };
 }
 
 // ---------- админ: приглашения ----------
@@ -454,7 +464,8 @@ function viewInvites() {
   };
   const paint = async () => {
     let list;
-    try { list = await api.listInvites(); } catch (e) { $('#inv').innerHTML = '<p class="err">Не удалось загрузить список.</p>'; return; }
+    try { list = await api.listInvites(); } catch (e) { if ($('#inv')) $('#inv').innerHTML = '<p class="err">Не удалось загрузить список.</p>'; return; }
+    if (!$('#inv')) return; // пока грузилось, открыли другой экран
     $('#inv').innerHTML = list.map((m) => `<div class="card"><div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><b>${esc(m.name)}</b><span class="small muted">${m.has_key ? 'ссылка выдана' : 'ссылки нет'} · рецензий ${m.reviews}</span></div>
       <div class="row wrap" style="margin-top:10px"><button class="btn" data-rot="${esc(m.author)}">Новая ссылка</button>${m.has_key ? `<button class="btn danger" data-rev="${esc(m.author)}">Отозвать</button>` : ''}${m.reviews === 0 ? `<button class="btn danger" data-delm="${esc(m.author)}">Удалить</button>` : ''}</div></div>`).join('');
     $('#inv').querySelectorAll('[data-rot]').forEach((b) => { b.onclick = () => {
@@ -541,7 +552,7 @@ function viewList() {
       : `<button class="item${sel(s)}" data-act="go" data-view="detail" data-id="${s.place.id}">
       <div class="t"><span>${esc(s.place.name)}</span>${stars(s.stars)}</div>
       <div class="meta">${esc(s.place.address)}</div>
-      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span>${fmtPrice(s.price) ? `<span class="chip price">${fmtPrice(s.price)}</span>` : ''}<span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`;
+      <div class="chips"><span class="chip" style="color:var(--acc-text);border-color:var(--ln2)">итог ${fmt(s.score)}</span>${priceChip(s.price)}<span class="chip">${esc(s.place.kind || 'место')}</span><span class="chip">вкус ${fmt(s.scores.taste)}</span><span class="chip">оценок ${s.count}</span>${((dd) => (dd?.kind === 'quality' ? '<span class="chip warn">разногласие</span>' : dd?.kind === 'trip' ? '<span class="chip">звёзды разные</span>' : ''))(disagreement(s.reviews))}</div></button>`;
     $app.querySelector('#items').innerHTML = xs.length ? xs.map((s) => {
       const div = split && isThin(s) && !dividerDone && (dividerDone = true) ? '<div class="divider"><span>МАЛО ДАННЫХ · ЖДУТ ВТОРОЙ РЕЦЕНЗИИ</span></div>' : '';
       return div + card(s);

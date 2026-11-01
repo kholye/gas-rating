@@ -159,7 +159,10 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .lb-load{position:absolute;left:0;right:0;bottom:24px;text-align:center;font:500 12px var(--mono);color:#fff;text-shadow:0 1px 6px #000}
 .btn.icon-only{flex:none;width:48px;padding:0;justify-content:center}
 .btn.icon-only svg.i{width:20px;height:20px}
-.chip.price{color:var(--ink);border-color:var(--ln2)}
+.chip.price{color:var(--ink);border-color:var(--ln2);display:inline-flex;align-items:baseline;gap:4px;text-transform:none;white-space:nowrap}
+.chip.price i{font-style:normal;color:var(--acc-text);font-weight:700}
+.chip.price em{font-style:normal;color:var(--dim);margin:0 3px}
+.chip.price small{font-size:inherit;color:var(--mut);text-transform:uppercase}
 .price-row{gap:10px}
 .price-in{flex:1;display:flex;align-items:center;gap:8px;min-height:48px;padding:0 14px;border-radius:14px;border:1px solid var(--ln2);background:var(--s1)}
 .price-in span{color:var(--mut);font-size:14px}
@@ -176,6 +179,8 @@ label.lbl{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.1
 .pr-one{top:10px;height:4px;background:var(--ln2)}
 .pr-one:nth-of-type(odd){top:26px}
 .pr-avg{top:17px;height:6px;background:var(--acc)}
+.pr-scale i.open{border-radius:0}
+.pr-scale i.open[style^="left:0%"]{border-radius:0 4px 4px 0}
 .pr-ticks{position:relative;height:14px;font:500 10px var(--mono);color:var(--dim)}
 .pr-ticks span{position:absolute;transform:translateX(-50%)}
 .pr-ticks span:first-child{left:0;transform:none}
