@@ -186,6 +186,9 @@ export function shareText(summary, siteUrl) {
 }
 // Ссылка на место из адреса: #p=номер (может стоять рядом с #k=...).
 export const readPlace = (hash) => { const m = /(?:^#|&)p=(\d+)/.exec(hash || ''); return m ? Number(m[1]) : null; };
+// Ссылка на комнату «Вместе»: #r=… (без личного ключа).
+export const roomLink = (siteUrl, id) => `${siteUrl}#r=${id}`;
+export const readRoom = (hash) => { const m = /(?:^#|&)r=([0-9a-f]{6,16})(?:&|$)/i.exec(hash || ''); return m ? m[1].toLowerCase() : null; };
 
 // Секретный код: из #k=... в адресе, иначе из сохранённого. Возвращает { code, fromUrl }.
 export function readCode(hash, stored) {
@@ -216,10 +219,10 @@ export function disagreement(reviews) {
   return tripGap ? { kind: 'trip', scales: [], tripGap } : null;
 }
 
-// Подкрутка слота: больше шансов у мест с баллом 8+, у мест, где давно не были (по дате последней рецензии), и у тех, что ближе.
+// Веса автомата (всегда включены): больше шансов у мест с баллом 8+, у мест, где давно не были (по дате последней рецензии), и у тех, что ближе.
 export function slotWeights(pool, { center = null, now = Date.now() } = {}) {
   return pool.map((s) => {
-    let w = s.score >= 8 ? 1.5 : 1;
+    let w = !s.count ? 1.4 : s.score >= 8 ? 1.5 : 1; // место из «Хочу сходить» чуть вероятнее обычного
     const last = Math.max(0, ...s.reviews.map((r) => Date.parse(r.updated_at || r.created_at) || 0));
     const days = (now - last) / 864e5;
     w *= days >= 60 ? 1.6 : days >= 30 ? 1.3 : 1;
@@ -235,6 +238,79 @@ export function pickWeighted(items, weights, rnd = Math.random) {
   let x = rnd() * weights.reduce((a, b) => a + b, 0);
   for (let i = 0; i < items.length; i++) { x -= weights[i]; if (x < 0) return items[i]; }
   return items[items.length - 1];
+}
+
+// ---- Автомат «Табло»: кухни, барабаны, режимы, джекпот, место дня ----
+// Кухня только из этого списка (никакого свободного ввода); тот же список проверяет база (local/migration-15.sql).
+export const KINDS = ['Кофейня', 'Пекарня', 'Бургеры и фастфуд', 'Шаурма', 'Шашлык и мясо', 'Рамен и японская', 'Китайская', 'Корейская',
+  'Тайская', 'Азиатская разная', 'Грузинская', 'Пицца и итальянская', 'Европейская', 'Русская', 'Бар'];
+export const isKind = (k) => KINDS.includes(k);
+export const SLOT_TRIES = 3; // три попытки — потом решено
+
+// Барабан «чек»: по середине среднего диапазона цен места; барабан «путь»: по расстоянию до точки.
+export const PRICE_BUCKETS = [['до 500', 500], ['500–1 000', 1000], ['1 000–2 000', 2000], ['2 000+', Infinity]];
+export const DIST_BUCKETS = [['до 1 км', 1], ['до 3 км', 3], ['до 10 км', 10], ['дальше 10 км', Infinity]];
+export function priceBucket(price) {
+  const a = price?.from ?? price?.to; const b = price?.to ?? price?.from;
+  if (a == null) return null;
+  return PRICE_BUCKETS.find(([, top]) => (a + b) / 2 < top)[0];
+}
+export const distBucket = (km) => (km == null || !Number.isFinite(km) ? null : DIST_BUCKETS.find(([, top]) => km <= top)[0]);
+
+// Что покажут три барабана для места: кухня, чек, путь (null — неизвестно).
+export function reelsOf(s, center = null) {
+  return [s.place.kind && isKind(s.place.kind) ? s.place.kind : null, priceBucket(s.price),
+    center ? distBucket(distanceKm(center.lat, center.lon, s.place.lat, s.place.lon)) : null];
+}
+
+// Режимы: 'tested' — проверенное (как раньше, итог ≥ порога); 'new' — где я ещё не был: без моей рецензии,
+// и группа не признала место плохим (мало данных или в пуле); 'mix' — и то и другое.
+const unexplored = (s) => !s.reviews.some((r) => r.mine) && (isThin(s) || inPool(s));
+export function slotCandidates(summaries, mode = 'mix') {
+  return summaries.filter((s) => (mode === 'tested' ? inPool(s) : mode === 'new' ? unexplored(s) : inPool(s) || unexplored(s)));
+}
+
+// «Держать» барабан: остаются места с тем же значением на нём; held — [кухня, чек, путь], null — барабан не держим.
+export function matchHeld(list, held, center = null) {
+  if (!held || held.every((h) => h == null)) return list;
+  return list.filter((s) => { const r = reelsOf(s, center); return held.every((h, i) => h == null || r[i] === h); });
+}
+
+// Джекпот: новое из «Хочу сходить» (ещё ни одной рецензии) или 3 звезды и давно никто не был (30+ дней).
+export function jackpotOf(s, now = Date.now()) {
+  if (!s.count) return 'НОВОЕ ИЗ «ХОЧУ СХОДИТЬ»';
+  const last = Math.max(0, ...s.reviews.map((r) => Date.parse(r.updated_at || r.created_at) || 0));
+  return s.stars === 3 && !isThin(s) && (now - last) / 864e5 >= 30 ? '3★ И ДАВНО НЕ БЫЛИ' : null;
+}
+
+// Место дня: одно на всех на весь день — выбор по дате, а не случайно.
+const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export function placeOfDay(pool, date = new Date()) {
+  if (!pool.length) return null;
+  let h = 2166136261; for (const ch of dayKey(date)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+  const list = [...pool].sort((a, b) => a.place.id - b.place.id);
+  return list[h % list.length];
+}
+
+// Название на табло: заглавными, по словам в строки не длиннее n, не больше max строк (не влезло — «…»).
+export function boardLines(text, n, max = 2) {
+  const lines = [];
+  for (let w of String(text || '').toUpperCase().split(/\s+/).filter(Boolean)) {
+    while (w.length > n) { lines.push(w.slice(0, n)); w = w.slice(n); } // слово длиннее строки режем
+    const i = lines.length - 1;
+    if (i >= 0 && lines[i].length + 1 + w.length <= n) lines[i] += ` ${w}`; else lines.push(w);
+  }
+  if (lines.length > max) { const cut = lines.slice(0, max); cut[max - 1] = `${cut[max - 1].slice(0, n - 1)}…`; return cut; }
+  return lines.length ? lines : [''];
+}
+
+// «Как сходили?»: после «Едем!» со следующего дня и до недели, пока я не оценил это место позже нажатия.
+export function goPrompt(trip, summaries, now = Date.now()) {
+  if (!trip || !trip.id || !trip.at) return null;
+  if (dayKey(new Date(trip.at)) >= dayKey(new Date(now)) || now - trip.at > 7 * 864e5) return null;
+  const s = summaries.find((x) => x.place.id === trip.id);
+  if (!s || s.reviews.some((r) => r.mine && Date.parse(r.updated_at || r.created_at) >= trip.at)) return null;
+  return s;
 }
 
 // «2 дн.», «1 нед.», «3 мес.»: давность рецензии для постов.

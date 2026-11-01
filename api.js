@@ -26,7 +26,7 @@ let route = (() => { try { const r = localStorage.getItem(ROUTE_KEY); return ROU
 const remember = (r) => { route = r; try { localStorage.setItem(ROUTE_KEY, r); } catch { /* необязательно */ } };
 export const currentRoute = () => route;
 // Чтения и повторяемые записи можно безопасно повторить, если связь оборвалась (повтор не создаст дубль).
-const RETRY = new Set(['get_all', 'get_photos', 'get_photo', 'get_covers', 'list_invites', 'save_review', 'update_avatar', 'resolve_link']);
+const RETRY = new Set(['get_all', 'get_photos', 'get_photo', 'get_covers', 'list_invites', 'save_review', 'update_avatar', 'resolve_link', 'room_get']);
 
 // trouble(fn, kind, info): сообщение для журнала ошибок, когда запрос окончательно не удался или сайт сменил путь к базе.
 const live = (getCode, getAuthor, trouble = () => {}) => {
@@ -90,26 +90,34 @@ const live = (getCode, getAuthor, trouble = () => {}) => {
     listErrors: () => call('list_errors', {}),
     resolveLink: (url) => call('resolve_link', { p_url: url }, 20000), // короткая ссылка карт → полная
     clearErrors: () => call('clear_errors', {}),
+    // «Вместе»: общая комната автомата (local/migration-15.sql)
+    roomCreate: () => call('room_create', {}),
+    roomGet: (id) => call('room_get', { p_id: id }, 12000),
+    roomSpin: (id, seen, placeId, reels) => call('room_spin', { p_id: id, p_seen: seen, p_place_id: placeId, p_reels: reels }),
+    roomVeto: (id, n) => call('room_veto', { p_id: id, p_n: n }),
   };
 };
 
 // ---- демо: ВЫДУМАННЫЕ примеры, настоящие оценки сюда не кладём (репозиторий публичный) ----
 // В демо ключ «admin» включает режим админа, любой другой (или пустой) — обычный участник.
-const DEMO_KEY = 'gas_demo_v2';
+const DEMO_KEY = 'gas_demo_v3';
 const demoSeed = () => {
   const rv = (id, place_id, author, author_name, verdict, a, t, s, c, tp, tl, i, comment = '') =>
     ({ id, place_id, author, author_name, verdict, access: a, taste: t, service: s, clean: c, toilet_present: tp, toilet: tl, impression: i, comment, created_at: '2026-01-01', updated_at: '2026-01-01' });
   return {
     next: 100,
     places: [
-      { id: 1, name: 'Пример: Кофейня «Зерно»', kind: 'кафе', address: 'Невский пр., 1', lat: 59.9361, lon: 30.3141, created_at: '2026-01-01' },
-      { id: 2, name: 'Пример: Бургерная «Лук»', kind: 'фастфуд', address: 'Лиговский пр., 10', lat: 59.9306, lon: 30.3607, created_at: '2026-01-02' },
-      { id: 3, name: 'Пример: Рамен-бар', kind: 'ресторан', address: 'Садовая ул., 12', lat: 59.9267, lon: 30.3200, created_at: '2026-01-03' },
-      { id: 4, name: 'Пример: Шаурма у метро', kind: 'шаурмечная', address: 'Московский пр., 100', lat: 59.8870, lon: 30.3190, created_at: '2026-01-04' },
+      { id: 1, name: 'Пример: Кофейня «Зерно»', kind: 'Кофейня', address: 'Невский пр., 1', lat: 59.9361, lon: 30.3141, created_at: '2026-01-01' },
+      { id: 2, name: 'Пример: Бургерная «Лук»', kind: 'Бургеры и фастфуд', address: 'Лиговский пр., 10', lat: 59.9306, lon: 30.3607, created_at: '2026-01-02' },
+      { id: 3, name: 'Пример: Рамен-бар', kind: 'Рамен и японская', address: 'Садовая ул., 12', lat: 59.9267, lon: 30.3200, created_at: '2026-01-03' },
+      { id: 4, name: 'Пример: Шаурма у метро', kind: 'Шаурма', address: 'Московский пр., 100', lat: 59.8870, lon: 30.3190, created_at: '2026-01-04' },
+      { id: 5, name: 'Пример: Хинкальная «Гора»', kind: 'Грузинская', address: 'ул. Рубинштейна, 20', lat: 59.9290, lon: 30.3460, created_at: '2026-01-05', added_by: 'demo-a' },
+      { id: 6, name: 'Пример: Пекарня «Тесто»', kind: 'Пекарня', address: 'Большой пр. П.С., 30', lat: 59.9590, lon: 30.3010, created_at: '2026-01-06', added_by: 'demo-b' },
     ],
     reviews: [
       rv(1, 1, 'demo-a', 'Аня', 3, 5, 5, 4, 5, true, 5, 5, 'Лучший флэт уайт'),
       rv(2, 1, 'demo-b', 'Борис', 3, 5, 4, 4, 5, true, 4, 5),
+      rv(8, 3, 'demo-a', 'Аня', 3, 4, 5, 4, 4, true, 4, 5),
       rv(3, 1, 'demo-c', null, 0, 2, 2, 2, 3, false, null, 2, 'Долго ждали, кофе остыл'),
       rv(4, 2, 'demo-a', 'Аня', 2, 4, 4, 3, 3, false, null, 4),
       rv(5, 2, 'demo-c', null, 1, 4, 3, 3, 3, null, null, 3),
@@ -118,6 +126,7 @@ const demoSeed = () => {
     ].map((r) => ({ ...r, avatar_seed: r.author_name ? { 'demo-a': 3300111, 'demo-b': 4400222 }[r.author] ?? 1 : null })),
   };
 };
+const DEMO_NAMES = { 'demo-a': 'Аня', 'demo-b': 'Борис' };
 const demo = (getCode, getAuthor) => {
   const load = () => { try { return JSON.parse(localStorage.getItem(DEMO_KEY)) || demoSeed(); } catch { return demoSeed(); } };
   const save = (d) => { try { localStorage.setItem(DEMO_KEY, JSON.stringify(d)); } catch { /* нет хранилища: изменения живут до перезагрузки */ } };
@@ -129,16 +138,23 @@ const demo = (getCode, getAuthor) => {
   let nextMember = 1;
   const invites = [{ author: 'demo-a', name: 'Аня', has_key: true, created_at: '2026-01-01' }, { author: 'demo-b', name: 'Борис', has_key: false, created_at: '2026-01-02' }];
   const forbid = () => { throw new ApiError('forbidden'); };
+  const rooms = {};
+  const roomState = (id, accepted = null) => {
+    const r = rooms[id];
+    return structuredClone({ id, accepted, people: [{ name: 'Вы', seed: 1, me: true, here: true }, { name: 'Аня', seed: 3300111, me: false, here: true }],
+      spins: r.spins.map((s) => ({ n: s.n, place_id: s.place_id, reels: s.reels, at: s.at, by_name: 'Вы', by_me: true, veto_name: s.veto ? 'Вы' : null, veto_me: s.veto === 'me' })),
+      my_veto: !r.spins.some((s) => s.veto === 'me'), tries_left: 3 - r.spins.filter((s) => !s.veto).length });
+  };
   return {
     getAll: async () => {
       const me = getAuthor(); const adm = role() === 'admin';
       return structuredClone({
-        role: role(), places: mem.places,
+        role: role(), places: mem.places.map(({ added_by, ...p }) => ({ ...p, mine: !!added_by && added_by === me, added_by_name: added_by ? DEMO_NAMES[added_by] || 'Вы' : null })),
         reviews: mem.reviews.map(({ author, ...r }) => ({ ...r, mine: author === me, ...(adm ? { author } : {}) })),
       });
     },
     savePlace: async (p) => {
-      if (p.id == null) { const id = mem.next++; mem.places.push({ ...p, id, created_at: new Date().toISOString() }); commit(); return id; }
+      if (p.id == null) { const id = mem.next++; mem.places.push({ ...p, id, created_at: new Date().toISOString(), added_by: getAuthor() }); commit(); return id; }
       if (role() !== 'admin') forbid();
       Object.assign(mem.places.find((x) => x.id === p.id), p); commit(); return p.id;
     },
@@ -192,7 +208,21 @@ const demo = (getCode, getAuthor) => {
     deleteInvite: async (member) => { if (role() !== 'admin') forbid(); const i = invites.findIndex((m) => m.author === member); if (i >= 0) invites.splice(i, 1); },
     deletePlace: async (id) => {
       if (mem.reviews.some((x) => x.place_id === id)) throw new ApiError('rejected', 'place_has_reviews');
+      if (role() !== 'admin' && mem.places.find((p) => p.id === id)?.added_by !== getAuthor()) forbid();
       mem.places = mem.places.filter((p) => p.id !== id); commit();
+    },
+    // «Вместе» в демо: комната живёт до перезагрузки, второй участник — выдуманная Аня
+    roomCreate: async () => { const id = Math.random().toString(16).slice(2, 14); rooms[id] = { spins: [] }; return roomState(id); },
+    roomGet: async (id) => { if (!rooms[id]) throw new ApiError('rejected', 'no_room'); return roomState(id); },
+    roomSpin: async (id, seen, placeId, reels) => {
+      const r = rooms[id]; if (!r) throw new ApiError('rejected', 'no_room');
+      if (seen !== r.spins.length || r.spins.filter((s) => !s.veto).length >= 3) return roomState(id, false);
+      r.spins.push({ n: r.spins.length + 1, place_id: placeId, reels, at: new Date().toISOString(), veto: null }); return roomState(id, true);
+    },
+    roomVeto: async (id, n) => {
+      const r = rooms[id]; const s = r?.spins[n - 1];
+      if (!s || n !== r.spins.length || s.veto || r.spins.some((x) => x.veto === 'me')) return roomState(id, false);
+      s.veto = 'me'; return roomState(id, true);
     },
   };
 };

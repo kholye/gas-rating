@@ -1,6 +1,7 @@
 import {
-  SCALES, summarize, RATED_SORTS, slotPool, searchSummaries, sortSummaries, findDuplicates,
+  SCALES, summarize, RATED_SORTS, searchSummaries, sortSummaries, findDuplicates,
   distanceKm, mapsLink, readCode, parsePastedLink, disagreement, slotWeights, pickWeighted, ago, displayName, isUuid, ratingModel, isThin, shareText, readPlace, parseMapLink, MAP_APPS, fmtPrice, priceToPct, parsePrice,
+  KINDS, reelsOf, slotCandidates, matchHeld, jackpotOf, placeOfDay, goPrompt, boardLines, roomLink, readRoom,
 } from './logic.js';
 import { makeApi, isDemo, ApiError, probe, probeRpc, routes, currentRoute } from './api.js';
 import { avatarSvg, crownSvg, reviewAvatar, randomSeed, authorSeed } from './avatar.js';
@@ -35,8 +36,9 @@ const S = { code: null, seed: loadSeed(), online: null, flash: '', author: AUTHO
 {
   const { code, fromUrl } = readCode(location.hash, ls.get('gas_code'));
   S.code = code; S.deepPlace = readPlace(location.hash); // ссылка на место из «Поделиться»
+  S.deepRoom = readRoom(location.hash); // ссылка на комнату «Вместе»
   if (fromUrl) ls.set('gas_code', code);
-  if (fromUrl || S.deepPlace != null) history.replaceState(null, '', location.pathname + location.search);
+  if (fromUrl || S.deepPlace != null || S.deepRoom) history.replaceState(null, '', location.pathname + location.search);
 }
 const api = makeApi(() => S.code, () => S.author, (fn, kind, info) => report(kind === 'route' ? 'route' : 'network', `${fn}: ${kind === 'route' ? 'смена пути' : kind === 'db' ? 'база не ответила' : 'обрыв связи'}`, info));
 
@@ -93,6 +95,11 @@ const ICON = {
   slot: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M9 5v14M15 5v14"/>',
   list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
   map: '<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14M15 6v14"/>',
+  people: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.6c2.2.1 3.9 1.5 4.5 4.4"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  sound: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>',
+  mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l5 6M22 9l-5 6"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
 };
 const ico = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 const themeIcon = () => ico({ light: 'sun', dark: 'moon' }[ls.get('gas_theme')] ?? 'auto');
@@ -185,7 +192,9 @@ function syncAvatar() {
 window.addEventListener('online', syncAvatar);
 // Открыть место по ссылке #p=…, как только оно есть в данных (один раз).
 function openDeep() {
-  if (S.deepPlace == null || S.gate || !S.data) return false;
+  if (S.gate || !S.data) return false;
+  if (S.deepRoom) { T.joinId = S.deepRoom; S.deepRoom = null; go('slot'); return true; }
+  if (S.deepPlace == null) return false;
   const id = S.deepPlace; if (!sumById(id)) return false;
   S.deepPlace = null; go('detail', { id }); return true;
 }
@@ -209,6 +218,7 @@ $root.addEventListener('click', (e) => {
   const a = t.dataset.act;
   if (a === 'back') cur.d > 0 ? history.back() : go('menu', {}, true);
   else if (a === 'theme') { cycleTheme(); render(); }
+  else if (a === 'nogo') { ls.set('gas_trip', ''); t.closest('.askgo')?.remove(); }
   else if (a === 'go') go(t.dataset.view, t.dataset.id ? { id: Number(t.dataset.id) } : {});
 });
 
@@ -228,6 +238,7 @@ function render() {
   if (S.map) { S.map.remove(); S.map = null; }
   if (S.pick) { S.pick.remove(); S.pick = null; }
   if (S.keyFn) { document.removeEventListener('keydown', S.keyFn); S.keyFn = null; }
+  if (S.onLeave) { S.onLeave(); S.onLeave = null; } // экран убирает свои таймеры (опрос комнаты «Вместе»)
   $app = $root; document.body.classList.remove('desk');
   if (S.gate) return viewGate();
   if (S.err) return viewError();
@@ -312,14 +323,26 @@ function viewGate() {
   };
 }
 
+// «Как сходили?»: на следующий день после «Едем!» в автомате (до недели), пока место не оценено или не нажато «Не ходили».
+const readTrip = () => { try { return JSON.parse(ls.get('gas_trip') || 'null'); } catch { return null; } };
+function askGoHtml() {
+  const s = goPrompt(readTrip(), S.sums); if (!s) return '';
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const when = today - readTrip().at < 864e5 ? 'Вчера' : 'Недавно';
+  return `<div class="askgo"><div>${when} вы собирались в <b>${esc(s.place.name)}</b>. Как сходили?</div>
+    <div class="row"><button class="btn accent grow" data-act="go" data-view="rate" data-id="${s.place.id}">Оценить</button><button class="btn" data-act="nogo">Не ходили</button></div></div>`;
+}
 function viewMenu() {
   const rated = S.sums.filter((s) => s.count).length;
   $app.innerHTML = `<header class="bar mehead"><button class="me-tile" data-act="go" data-view="me" aria-label="Открыть профиль">${avatarSvg(S.seed, { size: 52, animate: true, label: 'Ваш аватар' })}${S.role === 'admin' ? crownSvg() : ''}</button>
       <div class="grow"><div class="mename">${esc(S.role === 'admin' ? (S.name || 'Админ') : S.name && !S.anon ? S.name : 'Аноним')}</div><div class="label" style="font-size:11px;margin-top:2px">${S.role === 'admin' ? 'админ' : 'участник'} · профиль</div></div>
       <button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
     ${isDemo ? `<div class="notice">${ico('warn')}<span>Демо-режим: выдуманные примеры. Настоящая база подключается в <code>config.js</code>.</span></div>` : ''}
+    ${askGoHtml()}
     <h1 class="hero">Куда<br>едем<i>.</i></h1>
-    <button class="tile primary" data-act="go" data-view="slot"><span class="tag">01 · Слот-машина</span><span class="ttl">Выбрать место</span><span class="letters" aria-hidden="true"><b>G</b><b>A</b><b>S</b></span></button>
+    ${((pod) => `<button class="tile primary${pod ? ' has-pod' : ''}" data-act="go" data-view="slot"><span class="tag">01 · Слот-машина</span><span class="ttl">Выбрать место</span>${pod
+      ? `<span class="pod"><span class="tag">Место дня</span><span class="flaps">${flapsHtml(boardLines(pod.place.name, 18, 1)[0])}</span></span>`
+      : '<span class="letters" aria-hidden="true"><b>G</b><b>A</b><b>S</b></span>'}</button>`)(placeOfDay(slotCandidates(S.sums, 'tested')))}
     <div class="grid2">
       <button class="tile sq" data-act="go" data-view="list"><span class="tag">02 · Список</span><span><span class="num">${String(rated).padStart(2, '0')}</span><span class="ttl">Все оценённые</span></span></button>
       <button class="tile sq map" data-act="go" data-view="map"><span class="tag">03 · Карта</span>
@@ -498,22 +521,25 @@ function viewEditPlace() {
   const p = s.place; const draft = { name: p.name, kind: p.kind || '', address: p.address, lat: p.lat, lon: p.lon };
   $app.innerHTML = `${bar('Изменить место')}<form id="f" autocomplete="off">
     <label class="lbl" for="en">Название</label><input type="text" id="en" maxlength="120" value="${esc(p.name)}">
-    <label class="lbl" for="ek">Тип</label><input type="text" id="ek" maxlength="40" value="${esc(p.kind || '')}">
+    <span class="lbl">Кухня</span><div id="ek">${kindTiles(KINDS.includes(p.kind) ? p.kind : '', true)}</div>
     <label class="lbl" for="ea">Адрес</label><input type="text" id="ea" maxlength="300" value="${esc(p.address)}">
     <div class="small muted" style="margin-top:8px">Точка на карте: нажмите или перетащите булавку.</div><div id="pickmap"></div>
     <div class="err" id="msg"></div><button class="btn accent block" id="save" style="margin-top:14px">Сохранить</button></form>`;
   mountPicker('pickmap', { lat: p.lat, lon: p.lon }, (c) => { draft.lat = c.lat; draft.lon = c.lon; });
   const msg = $app.querySelector('#msg');
+  if (!KINDS.includes(draft.kind)) draft.kind = ''; // старый тип не из списка: админ выбирает кухню заново
+  const ek = $app.querySelector('#ek');
+  ek.onclick = (e) => { const b = e.target.closest('[data-kind]'); if (!b) return; draft.kind = draft.kind === b.dataset.kind ? '' : b.dataset.kind; ek.innerHTML = kindTiles(draft.kind, true); };
   $app.querySelector('#save').onclick = (e) => {
     e.preventDefault();
-    draft.name = $app.querySelector('#en').value.trim(); draft.kind = $app.querySelector('#ek').value.trim(); draft.address = $app.querySelector('#ea').value.trim();
+    draft.name = $app.querySelector('#en').value.trim(); draft.address = $app.querySelector('#ea').value.trim();
     if (!draft.name || !draft.address) { msg.textContent = 'Нужны название и адрес.'; return; }
     guard(async () => { await api.savePlace({ id: p.id, ...draft }); await refreshAfterWrite('Место сохранено, но список ещё не обновился: связь плохая.'); go('detail', { id: p.id }, true); }, msg);
   };
 }
 
 // ---------- список ----------
-const LST = { q: '', sort: 'score', min: '0' };
+const LST = { q: '', sort: 'score', min: '0', tab: 'rated' };
 // обложки баннеров 3 звёзд: миниатюры первых фото, одним запросом на все баннеры; запоминаются (null = фото нет)
 const bannerPhotos = new Map();
 async function paintBanners() {
@@ -528,8 +554,20 @@ async function paintBanners() {
   }
   els.forEach((el) => { const src = bannerPhotos.get(Number(el.dataset.pid)); if (src && el.isConnected) { el.style.backgroundImage = `url("${src}")`; el.classList.add('has'); } });
 }
+// «Хочу сходить»: место без рецензий, добавляется по ссылке из карт прямо в списке
+const W = { link: '', note: '', np: null, kindsOpen: false };
 function viewList() {
-  $app.innerHTML = `${bar('Все оценённые')}
+  const host = $app;
+  const redraw = () => { const prev = $app; $app = host; try { viewList(); } finally { $app = prev; } };
+  const nRated = S.sums.filter((s) => s.count).length; const nWant = S.sums.length - nRated;
+  const tabs = `<div class="tabs" role="tablist">${[['rated', `Оценённые · ${nRated}`], ['want', `Хочу сходить · ${nWant}`]].map(([k, t]) => `<button type="button" role="tab" class="tab${LST.tab === k ? ' on' : ''}" aria-selected="${LST.tab === k}" data-tab="${k}">${t}</button>`).join('')}</div>`;
+  if (LST.tab === 'want') {
+    $app.innerHTML = `${bar('Места')}${DESK.matches ? askGoHtml() : ''}${tabs}<div id="want"></div>`;
+    $app.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { LST.tab = b.dataset.tab; redraw(); }; });
+    paintWant(host, redraw);
+    return;
+  }
+  $app.innerHTML = `${bar('Места')}${DESK.matches ? askGoHtml() : ''}${tabs}
     <input type="search" id="q" placeholder="Поиск по названию или адресу" value="${esc(LST.q)}">
     <div class="row" style="margin:8px 0 12px"><select id="sort" aria-label="Сортировка">
       ${[['score', 'Сначала лучшие'], ['stars', 'По звёздам'], ['taste', 'По вкусу'], ['name', 'По названию'], ['new', 'Сначала новые']].map(([v, n]) => `<option value="${v}" ${LST.sort === v ? 'selected' : ''}>${n}</option>`).join('')}</select>
@@ -537,7 +575,7 @@ function viewList() {
     <div id="items"></div>`;
   const paint = () => {
     // мало данных: звёзды не показываются, при фильтре по звёздам такие места не берём
-    let xs = searchSummaries(S.sums, LST.q).filter((s) => Number(LST.min) === 0 || (!isThin(s) && (s.stars ?? -1) >= Number(LST.min)));
+    let xs = searchSummaries(S.sums.filter((s) => s.count), LST.q).filter((s) => Number(LST.min) === 0 || (!isThin(s) && (s.stars ?? -1) >= Number(LST.min)));
     xs = sortSummaries(xs, LST.sort);
     const split = RATED_SORTS.has(LST.sort); let dividerDone = false;
     const sel = (s) => (cur.view === 'detail' && cur.p.id === s.place.id ? ' sel' : '');
@@ -560,10 +598,69 @@ function viewList() {
       : '<p class="muted">Ничего не найдено. Попробуйте убрать фильтры или <a href="#" data-act="go" data-view="rate">оцените новое место</a>.</p>';
     paintBanners();
   };
+  $app.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { LST.tab = b.dataset.tab; redraw(); }; });
   $app.querySelector('#q').oninput = (e) => { LST.q = e.target.value; paint(); };
   $app.querySelector('#sort').onchange = (e) => { LST.sort = e.target.value; paint(); };
   $app.querySelector('#min').onchange = (e) => { LST.min = e.target.value; paint(); };
   paint();
+}
+
+function paintWant(host, redraw) {
+  const box = host.querySelector('#want'); if (!box) return;
+  const list = S.sums.filter((s) => !s.count).sort((a, b) => String(b.place.created_at).localeCompare(String(a.place.created_at)));
+  const np = W.np;
+  const dups = np && (np.name || np.lat != null) ? findDuplicates(S.data.places, { name: np.name, lat: np.lat, lon: np.lon }) : [];
+  box.innerHTML = `<div class="want-add"><div class="row"><input type="text" id="wlink" value="${esc(W.link)}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставьте ссылку из карт" aria-label="Ссылка на место из карт">
+      <button type="button" class="btn accent" id="wadd" aria-label="Добавить место по ссылке">${ico('plus')}</button></div>
+    <div class="small muted" id="wst" style="margin-top:6px">${esc(W.note || `Ссылка «Поделиться» из ${MAP_APPS}.`)}${np ? '' : ' <a href="#" id="wmanual">Без ссылки</a>'}</div>
+    ${np ? `<label class="lbl" for="wn">Название</label><input type="text" id="wn" maxlength="120" value="${esc(np.name)}">
+      <span class="lbl">Кухня${np.name ? ` для «${esc(np.name)}»` : ''}</span>${kindTiles(np.kind, W.kindsOpen)}
+      <label class="lbl" for="wa">Адрес</label><input type="text" id="wa" maxlength="300" value="${esc(np.address)}">
+      <div class="small muted" style="margin-top:6px">${np.lat != null ? 'Точка на карте стоит, её можно подвинуть.' : 'Поставьте точку на карте нажатием.'}</div><div id="wpick"></div>
+      ${dups.length ? `<div class="notice">Похоже, такое место уже есть: ${dups.map((d) => `<a href="#" data-act="go" data-view="detail" data-id="${d.id}">${esc(d.name)}</a>`).join(', ')}.</div>` : ''}
+      <div class="err" id="wmsg"></div>
+      <div class="row" style="margin-top:12px"><button class="btn accent grow" id="wsave">Добавить в «Хочу сходить»</button><button class="btn" id="wcancel">Отмена</button></div>` : ''}</div>
+    ${list.length ? list.map((s) => `<div class="wrow${cur.view === 'detail' && cur.p.id === s.place.id ? ' sel' : ''}"><button class="grow wmain" data-act="go" data-view="detail" data-id="${s.place.id}"><b>${esc(s.place.name)}</b>
+      <small>${esc([s.place.kind || 'кухня не указана', s.place.added_by_name ? (s.place.mine ? 'добавили вы' : `добавил(а) ${s.place.added_by_name}`) : ''].filter(Boolean).join(' · '))}</small></button>
+      <button class="btn sm" data-act="go" data-view="rate" data-id="${s.place.id}">Оценить</button>
+      ${s.place.mine || S.role === 'admin' ? `<button class="icon-btn" data-wdel="${s.place.id}" aria-label="Убрать из «Хочу сходить»">${ico('x')}</button>` : ''}</div>`).join('')
+      : '<p class="muted">Пока пусто. Вставьте ссылку на место, куда хотите сходить: автомат предложит его в режиме «Неизведанное».</p>'}`;
+  const $ = (q) => box.querySelector(q);
+  const keep = () => { if (!W.np) return; W.np.name = $('#wn').value; W.np.address = $('#wa').value; };
+  $('#wlink').oninput = (e) => { W.link = e.target.value; };
+  $('#wadd').onclick = async () => {
+    W.link = $('#wlink').value.trim(); if (!W.link) { $('#wst').textContent = 'Сначала вставьте ссылку из карт.'; return; }
+    keep(); const draft = W.np || { name: '', kind: '', address: '', lat: null, lon: null }; W.np = draft;
+    $('#wadd').disabled = true;
+    W.note = await resolvePlaceLink(W.link, draft, (t) => { const el = box.querySelector('#wst'); if (el) el.textContent = t; });
+    if (W.np === draft && host.isConnected) redraw();
+  };
+  const man = $('#wmanual'); if (man) man.onclick = (e) => { e.preventDefault(); W.np = { name: '', kind: '', address: '', lat: null, lon: null }; W.note = ''; redraw(); };
+  if (np) {
+    $('#wn').onchange = () => { keep(); redraw(); }; // название попадает в подпись кухни и в проверку дублей
+    box.querySelector('.kinds').onclick = (e) => {
+      const k = e.target.closest('[data-kind]'); if (k) { keep(); np.kind = k.dataset.kind; redraw(); }
+      if (e.target.closest('[data-kind-more]')) { keep(); W.kindsOpen = true; redraw(); }
+    };
+    if (window.L) mountPicker('wpick', np.lat != null ? np : null, (c) => { np.lat = c.lat; np.lon = c.lon; });
+    $('#wcancel').onclick = () => { W.np = null; W.note = ''; W.link = ''; W.kindsOpen = false; redraw(); };
+    $('#wsave').onclick = () => {
+      keep(); const miss = [];
+      if (!np.name.trim()) miss.push('название'); if (!np.kind) miss.push('кухню'); if (!np.address.trim()) miss.push('адрес'); if (np.lat == null) miss.push('точку на карте');
+      if (miss.length) { $('#wmsg').textContent = `Не заполнено: ${miss.join(', ')}.`; return; }
+      const btn = $('#wsave'); btn.disabled = true; btn.textContent = 'Добавляю…';
+      guard(async () => {
+        await api.savePlace({ name: np.name.trim(), kind: np.kind, address: np.address.trim(), lat: np.lat, lon: np.lon });
+        W.np = null; W.note = ''; W.link = ''; W.kindsOpen = false;
+        await refreshAfterWrite('Место добавлено, но список ещё не обновился: связь плохая.'); render();
+      }, $('#wmsg')).finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Добавить в «Хочу сходить»'; } });
+    };
+  }
+  box.querySelectorAll('[data-wdel]').forEach((b) => { b.onclick = () => {
+    const s = sumById(Number(b.dataset.wdel));
+    if (!s || !confirm(`Убрать «${s.place.name}» из «Хочу сходить»?`)) return;
+    guard(async () => { await api.deletePlace(s.place.id); await refreshAfterWrite('Место убрано, но список ещё не обновился: связь плохая.'); render(); }, b.closest('.wrow'));
+  }; });
 }
 
 // ---------- карточка заведения ----------
@@ -576,7 +673,7 @@ function viewDetail() {
   $app.innerHTML = `${bar('')}
     <div class="ph-head"><div class="grow"><div class="label">${esc(p.kind || 'место')}</div><h1>${esc(p.name)}</h1><div class="muted small" style="margin-top:8px">${esc(p.address)}</div></div>
       ${s.score == null ? '' : isThin(s) ? `<div style="text-align:right;flex:none">${thinTag(s)}</div>` : `<div style="text-align:right;flex:none"><div class="big ${scoreClass(s.score)}">${fmt(s.score)}<small>/10</small></div><div style="margin-top:6px">${stars(s.stars)}</div></div>`}</div>
-    ${s.count ? barsHtml(s.scores) : '<p class="muted">Пока нет рецензий.</p>'}
+    ${s.count ? barsHtml(s.scores) : `<p class="muted">Пока нет рецензий: место в «Хочу сходить»${p.added_by_name ? ` (${p.mine ? 'добавили вы' : `добавил(а) ${esc(p.added_by_name)}`})` : ''}.</p>`}
     ${priceHtml(s)}
     ${s.count && isThin(s) ? `<div class="notice soft">${ico('info')}<span>Пока одна рецензия: звёзды и итог появятся после второй, а в слот-машину место попадёт после неё.</span></div>` : ''}
     <details class="how"><summary>Как считается итоговый балл</summary><p>Балл рецензии: примерно поровну качество по критериям (вкус весит больше всего, затем впечатление, сервис и чистота) и звёзды. Доступность и туалет показываются отдельно и в итог не входят. Строгость авторов слегка выравнивается, а к каждому месту подмешивается среднее по группе (как две лишние рецензии), чтобы одна оценка не решала всё. Звёзды места — медиана вердиктов; при ничьей берётся меньшее, а «ехать специально» не выдаётся, если кто-то поставил 0. Меньше двух рецензий — «мало данных»: такое место не попадает в слот-машину.</p></details>
@@ -586,7 +683,7 @@ function viewDetail() {
       <button class="btn accent grow" data-act="go" data-view="rate" data-id="${p.id}">${mine ? '<span class="lbl-long">Изменить мою</span><span class="lbl-short">Изменить</span>' : 'Оценить'}</button></div>
     ${s.count ? `<div class="label" style="margin-top:26px">Рецензии · ${s.count}</div><div class="small muted" id="phnote" style="margin-top:6px">Загружаю фото…</div><div class="thread">${s.reviews.map((r, i) => postHtml(r, i === s.reviews.length - 1)).join('')}</div>` : ''}
     <div class="err" id="msg"></div>
-    <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${admin ? `<button class="btn" data-act="go" data-view="editplace" data-id="${p.id}">Изменить место</button>` : ''}${!s.count ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
+    <div class="row wrap" style="margin-top:12px">${mine ? '<button class="btn danger" id="delrev">Удалить мою рецензию</button>' : ''}${admin ? `<button class="btn" data-act="go" data-view="editplace" data-id="${p.id}">Изменить место</button>` : ''}${!s.count && (p.mine || admin) ? '<button class="btn danger" id="delplace">Удалить заведение</button>' : ''}</div>`;
   const msg = $app.querySelector('#msg');
   $app.querySelector('#share').onclick = () => sharePlace(s, msg);
   const del = $app.querySelector('#delrev');
@@ -724,6 +821,46 @@ function mountPicker(elId, start, onPick) {
   return { move: (c) => { m.setView([c.lat, c.lon], 16); mk.setLatLng([c.lat, c.lon]).setOpacity(1); } };
 }
 
+// Ссылка из приложения карт → np (заполняются только пустые поля): разбираем, короткую раскрывает база, адрес — по точке (OpenStreetMap).
+// st(текст) — ход работы; возвращает итоговую подсказку для человека.
+async function resolvePlaceLink(link, np, st) {
+  let p = parseMapLink(link);
+  if (!p) return `Не узнаю эту ссылку. Поддерживаются ${MAP_APPS}.`;
+  if (p.short) {
+    st('Раскрываю короткую ссылку…');
+    let res = null; try { res = await api.resolveLink(p.url); } catch { /* ниже сообщение */ }
+    const name0 = p.name; const full = typeof res === 'string' ? res : res?.url;
+    p = full ? parseMapLink(full) : null;
+    if (p && !p.name && name0) p.name = name0; // название из текста перед короткой ссылкой
+    if (!p || p.short || p.lat == null) {
+      report('link', 'не раскрылась короткая ссылка', `${String(link).slice(0, 300)}\n${JSON.stringify(res).slice(0, 1500)}`);
+      if (name0 && !np.name.trim()) np.name = name0;
+      return 'Не удалось раскрыть короткую ссылку. Откройте её в браузере и скопируйте полный адрес из адресной строки.';
+    }
+  }
+  if (p.name && !np.name.trim()) np.name = p.name;
+  if (p.address && !np.address.trim()) np.address = p.address;
+  if (p.lat != null) {
+    np.lat = p.lat; np.lon = p.lon; st('Точка поставлена, ищу адрес…');
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&accept-language=ru&lat=${p.lat}&lon=${p.lon}`);
+      const j = r.ok ? await r.json() : {}; const a = j.address || {};
+      const street = [a.road || a.pedestrian || a.footway || a.square, a.house_number].filter(Boolean).join(', ');
+      const addr = [street, a.city || a.town || a.village].filter(Boolean).join(', ') || j.display_name || '';
+      if (!np.address.trim() && addr) np.address = addr;
+    } catch { /* адрес можно ввести руками */ }
+  }
+  return p.lat != null ? `Из ссылки (${p.source}): точка${p.name ? ', название' : ''}${np.address ? ', адрес' : ''}.${p.name ? '' : ` Название в этой ссылке не передаётся — введите его сами${p.hint ? ` (в ссылке оно латиницей: «${p.hint}»)` : ''}.`} Проверьте и поправьте, если нужно.`
+    : `${p.source}: в ссылке нет координат${p.name ? ' (название подставлено)' : ''}${p.source === '2ГИС' ? ', а сайт 2ГИС не пускает автоматические запросы' : ''} — поставьте точку на карте.`;
+}
+
+// Кухня: плитки из фиксированного списка (первые 8 и «Ещё…»), свободного ввода нет.
+const KIND_MAIN = 8;
+const kindTiles = (curKind, open) => {
+  const all = open || KINDS.indexOf(curKind) >= KIND_MAIN; const list = all ? KINDS : KINDS.slice(0, KIND_MAIN);
+  return `<div class="kinds" role="radiogroup" aria-label="Кухня">${list.map((k) => `<button type="button" class="kt${k === curKind ? ' on' : ''}" data-kind="${esc(k)}" role="radio" aria-checked="${k === curKind}">${esc(k)}</button>`).join('')}${all ? '' : `<button type="button" class="kt more" data-kind-more>Ещё ${KINDS.length - KIND_MAIN}…</button>`}</div>`;
+};
+
 // ---------- форма оценки ----------
 let R = null; // состояние формы
 const SCALE_KEYS = SCALES.filter(([k]) => k !== 'toilet');
@@ -758,8 +895,7 @@ function viewRate() {
       <div class="row"><input type="text" id="mlink" name="mlink" value="${esc(R.np.link || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставьте ссылку «Поделиться»"><button type="button" class="btn" id="fromlink">Подставить</button></div>
       <div class="small muted" id="linkst" style="margin-top:6px">${esc(R.linkNote || `Поддерживаются ${MAP_APPS}. Нажмите «Подставить»: точка и адрес (и название, если оно есть в ссылке) подставятся сами.`)}</div>
       <label class="lbl" for="nm">Название</label><input type="text" id="nm" name="name" value="${esc(R.np.name)}" maxlength="120">
-      <label class="lbl" for="kd">Тип (кафе, ресторан, фастфуд…)</label><input type="text" id="kd" name="kind" list="kinds" value="${esc(R.np.kind)}" maxlength="40">
-      <datalist id="kinds"><option>кафе<option>ресторан<option>фастфуд<option>шаурмечная<option>шашлычная<option>бар<option>пекарня</datalist>
+      <span class="lbl">Кухня · одна из списка</span>${kindTiles(R.np.kind, R.kindsOpen)}
       <label class="lbl" for="ad">Адрес</label>
       <div class="row"><input type="text" id="ad" name="address" value="${esc(R.np.address)}" maxlength="300"><button type="button" class="btn" id="find">Найти</button></div>
       ${R.found.length ? `<div>${R.found.map((f, i) => `<button type="button" class="item" data-found="${i}"><div class="meta">${esc(f.display_name)}</div></button>`).join('')}</div>` : ''}
@@ -808,51 +944,23 @@ function viewRate() {
     else if (name === 'aname') R.name = value;
     else if (name === 'mlink') R.np.link = value;
     else if (name === 'price_from' || name === 'price_to') R[name] = parsePrice(value);
-    else if (['name', 'kind', 'address'].includes(name)) { R.np[name] = value; if (name === 'name') clearTimeout(R.t), R.t = setTimeout(redrawKeepFocus, 600); }
+    else if (['name', 'address'].includes(name)) { R.np[name] = value; if (name === 'name') clearTimeout(R.t), R.t = setTimeout(redrawKeepFocus, 600); }
   });
   const redrawKeepFocus = () => { const id = document.activeElement?.id; redraw(); if (id) document.getElementById(id)?.focus(); };
   f.addEventListener('click', (e) => {
+    const kd = e.target.closest('[data-kind]'); if (kd) { R.np.kind = kd.dataset.kind; redraw(); return; }
+    if (e.target.closest('[data-kind-more]')) { R.kindsOpen = true; redraw(); return; }
     const rm = e.target.closest('[data-rm]'); if (rm) { const [gone] = R.photos.splice(Number(rm.dataset.rm), 1); URL.revokeObjectURL(gone.url); redraw(); return; }
     const pr = e.target.closest('[data-price]');
     if (pr) { const [a, b] = pr.dataset.price.split('-'); R.price_from = a === '' ? null : Number(a); R.price_to = b === '' ? null : Number(b); redraw(); return; }
     const pk = e.target.closest('[data-pick]'); if (pk) { e.preventDefault(); R.placeId = Number(pk.dataset.pick); R.mode = 'exist'; prefill(); redraw(); }
     const fd = e.target.closest('[data-found]'); if (fd) { const x = R.found[fd.dataset.found]; R.np.lat = +(+x.lat).toFixed(6); R.np.lon = +(+x.lon).toFixed(6); R.np.address = R.np.address || x.display_name; R.found = []; redraw(); }
   });
-  // ссылка из приложения карт: разбираем, короткую раскрывает база, адрес и название — по точке (OpenStreetMap)
   const fromLink = async () => {
-    const st = (t) => { const el = f.querySelector('#linkst'); if (el) el.textContent = t; };
-    let p = parseMapLink(R.np.link);
-    if (!p) { st(`Не узнаю эту ссылку. Поддерживаются ${MAP_APPS}.`); return; }
-    if (p.short) {
-      st('Раскрываю короткую ссылку…');
-      let res = null; try { res = await api.resolveLink(p.url); } catch { /* ниже сообщение */ }
-      const name0 = p.name; const full = typeof res === 'string' ? res : res?.url;
-      p = full ? parseMapLink(full) : null;
-      if (p && !p.name && name0) p.name = name0; // название из текста перед короткой ссылкой
-      if (!R) return;
-      if (!p || p.short || p.lat == null) {
-        st('Не удалось раскрыть короткую ссылку. Откройте её в браузере и скопируйте полный адрес из адресной строки.');
-        report('link', 'не раскрылась короткая ссылка', `${R.np.link.slice(0, 300)}\n${JSON.stringify(res).slice(0, 1500)}`);
-        if (name0 && !R.np.name.trim()) { R.np.name = name0; redraw(); }
-        return;
-      }
-    }
-    if (p.name && !R.np.name.trim()) R.np.name = p.name;
-    if (p.address && !R.np.address.trim()) R.np.address = p.address;
-    if (p.lat != null) {
-      R.np.lat = p.lat; R.np.lon = p.lon; st('Точка поставлена, ищу адрес…');
-      try {
-        const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&accept-language=ru&lat=${p.lat}&lon=${p.lon}`);
-        const j = r.ok ? await r.json() : {}; const a = j.address || {};
-        const street = [a.road || a.pedestrian || a.footway || a.square, a.house_number].filter(Boolean).join(', ');
-        const addr = [street, a.city || a.town || a.village].filter(Boolean).join(', ') || j.display_name || '';
-        if (R && !R.np.address.trim() && addr) R.np.address = addr;
-      } catch { /* адрес можно ввести руками */ }
-    }
-    if (!R) return;
-    R.linkNote = p.lat != null ? `Из ссылки (${p.source}): точка${p.name ? ', название' : ''}${R.np.address ? ', адрес' : ''}.${p.name ? '' : ` Название в этой ссылке не передаётся — введите его сами${p.hint ? ` (в ссылке оно латиницей: «${p.hint}»)` : ''}.`} Проверьте и поправьте, если нужно.`
-      : `${p.source}: в ссылке нет координат${p.name ? ' (название подставлено)' : ''}${p.source === '2ГИС' ? ', а сайт 2ГИС не пускает автоматические запросы' : ''} — поставьте точку на карте или нажмите «Найти».`;
-    redraw();
+    const np = R.np;
+    const note = await resolvePlaceLink(np.link, np, (t) => { const el = f.querySelector('#linkst'); if (el) el.textContent = t; });
+    if (!R || R.np !== np) return; // форму уже закрыли
+    R.linkNote = note; redraw();
   };
   const fl = f.querySelector('#fromlink');
   if (fl) fl.onclick = () => { R.np.link = f.querySelector('#mlink').value; fromLink(); }; // раскрываем только по нажатию
@@ -877,7 +985,7 @@ function viewRate() {
     const miss = [];
     if (!R.anon && !R.name.trim()) miss.push('имя (или «Анонимно»)');
     if (R.mode === 'new') {
-      if (!R.np.name.trim()) miss.push('название'); if (!R.np.address.trim()) miss.push('адрес');
+      if (!R.np.name.trim()) miss.push('название'); if (!R.np.kind) miss.push('кухню'); if (!R.np.address.trim()) miss.push('адрес');
       if (R.np.lat == null) miss.push('точку на карте');
     } else if (!R.placeId) miss.push('заведение');
     if (R.verdict == null) miss.push('общий вердикт');
@@ -888,7 +996,7 @@ function viewRate() {
     const btn = e.target; btn.disabled = true; btn.textContent = 'Отправляю…';
     guard(async () => {
       let id = R.placeId;
-      if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind.trim(), address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
+      if (R.mode === 'new') id = await api.savePlace({ name: R.np.name.trim(), kind: R.np.kind, address: R.np.address.trim(), lat: R.np.lat, lon: R.np.lon });
       await api.saveReview({
         place_id: id, name: R.name.trim(), anon: R.anon, avatar_seed: R.anon ? null : S.seed, verdict: R.verdict, access: R.access, taste: R.taste, service: R.service, clean: R.clean, impression: R.impression,
         toilet_present: R.toilet_present === 'unknown' ? null : R.toilet_present, toilet: R.toilet, comment: R.comment.trim(),
@@ -908,164 +1016,307 @@ function viewRate() {
   };
 }
 
-// ---------- слот-машина ----------
-const T = { rig: ls.get('gas_rig') !== '0', nearby: ls.get('gas_nearby') !== '0', center: null, radius: 5, geo: 'idle', spinning: false, manual: false };
-const ROW = 40; // высота строки барабана на телефоне, px; на компьютере берётся из вёрстки (.reel .cell)
-const G = () => window.gsap; // если GSAP не загрузился, всё работает без анимации
-const calm = () => !G() || matchMedia('(prefers-reduced-motion: reduce)').matches;
+// ---------- автомат «Табло» ----------
+// Три строки табло (кухня, чек, путь) перелистываются и останавливаются по очереди, потом «прибывает» место.
+// Место выбирается заранее по весам (давно не были, ближе, балл), а барабаны показывают его кухню, чек и путь;
+// «Держать» строку = следующие прокруты только среди мест с тем же значением. Три попытки — потом решено.
+const T = { mode: ['tested', 'new', 'mix'].includes(ls.get('gas_mode')) ? ls.get('gas_mode') : 'mix', held: [null, null, null], tries: 0, last: null,
+  win: null, reels: null, note: '', center: null, geo: 'idle', manual: false, spinning: false, visit: null, room: null, joinId: null, shown: 0 };
+const G = () => window.gsap; // если GSAP не загрузился, всё работает без конфетти
+const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const rnd = (a, b) => a + Math.random() * (b - a);
+const MODES = [['tested', 'Проверенное'], ['new', 'Неизведанное'], ['mix', 'Микс']];
+const ROWS = ['КУХНЯ', 'ЧЕК', 'ПУТЬ'];
+// на табло короткие подписи (строка из 11 клеток); в данных и при «держать» — полные
+const BOARD_SHORT = { 'Бургеры и фастфуд': 'Бургеры', 'Шашлык и мясо': 'Шашлык', 'Рамен и японская': 'Рамен', 'Азиатская разная': 'Азия', 'Пицца и итальянская': 'Пицца', 'дальше 10 км': '10+ км' };
+const boardText = (v) => (v == null ? '—' : (BOARD_SHORT[v] || v).toUpperCase());
+const AZ = 'АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЭЮЯ0123456789';
+const rndCh = () => AZ[Math.floor(Math.random() * AZ.length)];
+const padC = (s, n) => { s = s.slice(0, n); const l = Math.floor((n - s.length) / 2); return ' '.repeat(l) + s + ' '.repeat(n - s.length - l); };
+const flapsHtml = (s, cls = '') => [...s].map((c) => `<span class="fl${cls}">${c === ' ' ? '&nbsp;' : esc(c)}</span>`).join('');
+
+// звук: ZzFX (vendor/zzfx, 10 КБ) подгружается при первом прокруте; выключатель запоминается
+const SND = { on: ls.get('gas_sound') !== '0', fx: null };
+async function sound(kind) {
+  if (!SND.on) return;
+  try {
+    if (!SND.fx) { const m = await import('./vendor/zzfx/ZzFX.js'); m.ZZFX.volume = 0.25; SND.fx = m.zzfx; }
+    const p = { tick: [0.25, 0, 1900, 0, 0, 0.012, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.4], stop: [0.7, 0, 180, 0, 0.02, 0.07, 2, 0, 0, 0, 0, 0, 0, 1.5],
+      win: [0.8, 0, 520, 0.01, 0.12, 0.25, 0, 1.2, 0, 0, 260, 0.07, 0.09], jack: [1, 0, 660, 0.02, 0.3, 0.5, 0, 1, 0, 0, 330, 0.06, 0.1, 0, 0, 0, 0.05] }[kind];
+    if (p) SND.fx(...p);
+  } catch { SND.on = false; } // без звука автомат работает так же
+}
+const buzz = (ms) => { try { navigator.vibrate?.(ms); } catch { /* вибрация есть не везде */ } };
+
+// Прокрут на табло: start() — строки листаются, finish(reels, name) — останавливаются по очереди и «прибывает» место.
+function board(root, held) {
+  const rows = [0, 1, 2].map((i) => root.querySelector(`#brow${i} .flaps`));
+  const nameBox = root.querySelector('#bname');
+  const n = rows[0].children.length; const nn = Number(nameBox.dataset.n);
+  const flip = (el) => [...el.children].forEach((c) => { c.textContent = rndCh(); c.classList.add('go'); });
+  const stopped = held.map((h) => h != null); let timer = 0; let ticks = 0;
+  const run = () => { timer = setInterval(() => {
+    rows.forEach((el, i) => { if (!stopped[i]) flip(el); });
+    nameBox.querySelectorAll('.fl:not(.done)').forEach((c) => { c.textContent = rndCh(); c.classList.add('go'); });
+    if (++ticks % 2 === 0) sound('tick');
+  }, 70); };
+  return {
+    start() { if (!calm()) run(); },
+    stop() { clearInterval(timer); },
+    finish(reels, name) {
+      return new Promise((done) => {
+        const lines = boardLines(name, nn);
+        const setName = (k) => { // k первых букв уже на месте
+          let j = 0;
+          nameBox.innerHTML = lines.map((l) => `<div class="nl">${[...padC(l, nn)].map((c) => { const ok = j++ < k; return `<span class="fl big${ok ? ' done' : ''}">${ok ? (c === ' ' ? '&nbsp;' : esc(c)) : esc(rndCh())}</span>`; }).join('')}</div>`).join('');
+        };
+        const setRow = (i) => { rows[i].innerHTML = flapsHtml(padC(boardText(reels[i]), n), reels[i] == null ? ' dim' : ''); };
+        if (calm()) { clearInterval(timer); [0, 1, 2].forEach(setRow); setName(nn * 2); done(); return; }
+        setName(0);
+        const order = [0, 1, 2].filter((i) => !stopped[i]);
+        order.forEach((i, k) => setTimeout(() => { stopped[i] = true; setRow(i); sound('stop'); buzz(12); }, 450 + k * 380));
+        let k = 0;
+        setTimeout(() => {
+          const iv = setInterval(() => {
+            k += 2; setName(k);
+            if (k >= nn * lines.length) { clearInterval(iv); clearInterval(timer); done(); }
+          }, 55);
+        }, 450 + order.length * 380);
+      });
+    },
+  };
+}
 
 function viewSlot() {
-  const pool = () => slotPool(S.sums, { nearby: T.nearby, center: T.center, radiusKm: T.radius });
-  const status = () => {
-    if (!T.nearby && T.geo === 'failed') return 'Геолокация недоступна, поэтому поиск рядом выключен. Включите «Рядом» и поставьте точку на карте.';
-    if (!T.nearby) return 'Поиск по радиусу выключен: берём любое место с высоким итоговым баллом.';
-    if (T.geo === 'asking') return 'Определяю, где вы…';
-    if (!T.center) return 'Не знаю, где вы. Поставьте точку на карте или выключите «Рядом».';
-    return `Ищу в радиусе ${T.radius} км от ${T.manual ? 'выбранной точки' : 'вас'}.`;
+  if (T.visit !== cur) { // новый заход на экран: попытки и «держать» с нуля
+    if (T.visit && !T.room) { T.tries = 0; T.held = [null, null, null]; T.win = null; T.reels = null; T.note = ''; }
+    T.visit = cur;
+  }
+  const n = DESK.matches ? 13 : 11; const nn = DESK.matches ? 20 : 16;
+  const room = () => T.room;
+  const triesLeft = () => (room() ? room().tries_left : 3 - T.tries);
+  const pool = () => {
+    let xs = matchHeld(slotCandidates(S.sums, T.mode), T.held, T.center);
+    if (room()) { const vetoed = new Set(room().spins.filter((s) => s.veto_name).map((s) => s.place_id)); xs = xs.filter((s) => !vetoed.has(s.place.id)); }
+    return xs;
   };
-  $app.innerHTML = `${bar('Куда едем')}
-    <div class="pills"><label class="pill"><input type="checkbox" id="nb" ${T.nearby ? 'checked' : ''}><span>Рядом</span></label>
-      <label class="pill"><input type="checkbox" id="rig" ${T.rig ? 'checked' : ''}><span>Подкрутка</span></label></div>
-    <div class="small muted" id="st" style="margin-top:10px"></div>
-    <div id="pickwrap" class="${T.manual ? '' : 'hidden'}"><div id="pickmap"></div></div>
-    <div class="row wrap" id="geoBtns" style="margin-top:8px"></div>
-    <div class="machine" id="machine">
-      <div class="reels" aria-hidden="true"><div class="band"></div>${[0, 1, 2].map((i) => `<div class="reel" id="reel${i}"><div class="strip"><div class="cell"></div><div class="cell idle">${'GAS'[i]}</div><div class="cell"></div></div></div>`).join('')}</div>
-      <div class="handle" id="handle" role="group" aria-label="Ручка слот-машины"><span class="hint">ПОТЯНИ</span><button type="button" class="knob" id="knob" aria-label="Дёрнуть ручку">${ico('arrow')}</button></div>
-      <div class="small muted dk-only" style="margin-top:10px;text-align:center">Пробел — крутить</div>
-    </div>
-    <div id="out" aria-live="polite"></div>`;
+  const pick = (xs) => { const ys = xs.length > 1 && T.last != null ? xs.filter((s) => s.place.id !== T.last) : xs; return pickWeighted(ys, slotWeights(ys, { center: T.center })); };
+  const nameOf = () => (T.win ? T.win.place.name : 'Куда едем?');
+  $app.innerHTML = `<header class="bar"><button class="icon-btn" data-act="back" aria-label="Назад">${ico('back')}</button><h1>Куда едем</h1>
+      <button class="btn sm" id="together" aria-label="Крутить вместе с друзьями">${ico('people')}<span>Вместе</span></button>
+      <button class="icon-btn" data-act="theme" aria-label="Сменить тему">${themeIcon()}</button></header>
+    <div id="roomstrip"></div>
+    <div class="slot-grid"><div class="slot-l">
+      <div class="board" id="board">
+        <div class="b-top"><span class="b-dot"></span><span class="grow b-ttl">ОТПРАВЛЕНИЯ</span><span id="btries"></span>
+          <button type="button" class="b-snd" id="snd" aria-pressed="${SND.on}" aria-label="Звук">${ico(SND.on ? 'sound' : 'mute')}</button></div>
+        <div class="b-modes" role="radiogroup" aria-label="Что крутим">${MODES.map(([id, t]) => `<button type="button" class="b-mode${T.mode === id ? ' on' : ''}" data-mode="${id}" role="radio" aria-checked="${T.mode === id}">${t}</button>`).join('')}</div>
+        <div class="b-line"></div>
+        ${ROWS.map((label, i) => `<div class="b-row" id="brow${i}"><span class="b-lbl">${label}</span><span class="flaps">${flapsHtml(padC(T.reels ? boardText(T.reels[i]) : '···', n), T.reels && T.reels[i] != null ? '' : ' dim')}</span>
+          <button type="button" class="b-lock${T.held[i] != null ? ' on' : ''}" data-hold="${i}" aria-pressed="${T.held[i] != null}" aria-label="Держать: ${label.toLowerCase()}">${ico('lock')}</button></div>`).join('')}
+        <div class="b-line"></div>
+        <div class="b-lbl">ПРИБЫТИЕ</div>
+        <div class="b-name" id="bname" data-n="${nn}">${boardLines(nameOf(), nn).map((l) => `<div class="nl">${flapsHtml(padC(l, nn), T.win ? ' big done' : ' big dim')}</div>`).join('')}</div>
+      </div>
+      <button class="spin" id="spin"></button>
+      <div class="small muted" id="st" style="margin-top:10px"></div>
+      <div id="pickwrap" class="${T.manual ? '' : 'hidden'}"><div id="pickmap"></div></div>
+      <div class="row wrap" id="geoBtns" style="margin-top:8px"></div>
+      <div class="small muted dk-only" style="margin-top:6px">Пробел — крутить</div>
+    </div><div class="slot-r"><div id="out" aria-live="polite"></div><div id="resmap" class="res-map dk-only hidden"></div></div></div>`;
   const $ = (s) => $app.querySelector(s);
-  const knob = $('#knob'); const handle = $('#handle');
-  const maxX = () => handle.clientWidth - knob.offsetWidth - 10;
-  const hint = !calm() ? G().to(knob, { x: 8, duration: 0.8, yoyo: true, repeat: -1, ease: 'sine.inOut' }) : null;
+  const host = $app;
 
-  const paintStatus = () => {
-    $('#st').textContent = status();
+  const status = () => {
+    if (T.geo === 'asking') return 'Определяю, где вы, чтобы посчитать путь…';
+    if (!T.center) return 'Не знаю, где вы: строка «путь» пустая. Поставьте точку на карте, если нужен путь.';
+    return `Путь считаю от ${T.manual ? 'выбранной точки' : 'вас'}.`;
+  };
+  const paint = () => {
+    const left = triesLeft(); const used = 3 - left; const decided = left <= 0;
     const empty = pool().length === 0;
-    $('#nb + span').textContent = T.nearby ? `Рядом · ${T.radius} км` : 'Рядом';
-    $('#geoBtns').innerHTML = `${T.nearby ? '<button class="btn" id="setpt">Поставить точку на карте</button>' : ''}
-      ${T.nearby && empty && T.center && T.radius < 15 ? '<button class="btn" id="wider">Расширить до 15 км</button>' : ''}
-      ${T.nearby && empty && T.center ? '<button class="btn" id="off">Выключить поиск рядом</button>' : ''}`;
-    const blocked = T.spinning || empty || (T.nearby && !T.center);
-    knob.disabled = blocked; handle.setAttribute('aria-disabled', String(blocked));
-    if (!T.spinning) {
-      if (empty && (!T.nearby || T.center)) $('#out').innerHTML = `<div class="notice">${ico('warn')}<span>${T.nearby ? 'Рядом нет подходящих мест.' : 'Пока нет мест с высоким итоговым баллом. Оцените что-нибудь!'}</span></div>`;
-      else if ($('#out .notice')) $('#out').innerHTML = '';
+    $('#btries').textContent = decided ? '3/3 · РЕШЕНО' : `ПОПЫТКА ${Math.min(used + (T.spinning ? 0 : 1), 3)}/3`;
+    const sp = $('#spin');
+    sp.textContent = decided ? 'РЕШЕНО' : T.spinning ? 'КРУТИТСЯ…' : T.win || used ? 'ЕЩЁ РАЗ' : 'КРУТИТЬ';
+    sp.disabled = T.spinning || decided || empty;
+    $app.querySelectorAll('[data-hold]').forEach((b) => { const i = Number(b.dataset.hold); b.disabled = T.spinning || decided || !T.reels || T.reels[i] == null; });
+    $app.querySelectorAll('[data-mode]').forEach((b) => { b.disabled = T.spinning; });
+    $('#st').textContent = status();
+    $('#geoBtns').innerHTML = `<button class="btn sm" id="setpt">${T.center ? 'Другая точка' : 'Поставить точку на карте'}</button>`;
+    $('#setpt').onclick = () => { T.manual = true; $('#pickwrap').classList.remove('hidden'); mountPicker('pickmap', T.center, (c) => { T.center = c; T.geo = 'done'; paint(); }); };
+    if (T.manual && !S.pick && !$('#pickwrap').classList.contains('hidden')) mountPicker('pickmap', T.center, (c) => { T.center = c; T.geo = 'done'; paint(); });
+    if (!T.spinning && !T.win) {
+      $('#out').innerHTML = empty ? `<div class="notice">${ico('warn')}<span>${T.held.some((h) => h != null) ? 'Под эти строки мест нет. Отпустите одну из них (замок справа).'
+        : T.mode === 'new' ? 'Неизведанных мест нет: вы были везде. Добавьте место в «Хочу сходить» в списке мест или выберите «Проверенное».' : 'Пока нет мест с высоким итоговым баллом. Оцените что-нибудь!'}</span></div>`
+        : `<div class="notice soft">${ico('info')}<span>Табло выберет кухню, чек и путь, и «прибудет» место. Замок справа держит строку: следующий прокрут будет только среди таких мест. Три попытки, потом решено.</span></div>`;
     }
-    const b = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
-    b('#setpt', () => { T.manual = true; $('#pickwrap').classList.remove('hidden'); mountPicker('pickmap', T.center, (c) => { T.center = c; T.geo = 'done'; paintStatus(); }); });
-    b('#wider', () => { T.radius = 15; paintStatus(); });
-    b('#off', () => { T.nearby = false; ls.set('gas_nearby', '0'); $('#nb').checked = false; paintStatus(); });
-    if (T.manual && !S.pick) mountPicker('pickmap', T.center, (c) => { T.center = c; T.geo = 'done'; paintStatus(); });
+    paintRoom();
   };
-  const locate = () => {
-    if (!T.nearby || T.center) return;
-    if (!navigator.geolocation) { T.geo = 'failed'; T.nearby = false; $('#nb').checked = false; paintStatus(); return; }
-    T.geo = 'asking'; paintStatus();
-    navigator.geolocation.getCurrentPosition(
-      (p) => { T.center = { lat: p.coords.latitude, lon: p.coords.longitude }; T.geo = 'done'; T.manual = false; paintStatus(); },
-      () => { T.geo = 'failed'; T.nearby = false; $('#nb').checked = false; paintStatus(); },
-      { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 });
+
+  // ---- «Вместе»: полоса комнаты, ссылка, вето ----
+  const paintRoom = () => {
+    const r = room(); const box = $('#roomstrip'); if (!box) return;
+    $('#together').classList.toggle('hidden', !!r);
+    if (!r) { box.innerHTML = ''; return; }
+    const here = r.people.filter((p) => p.here || p.me);
+    box.innerHTML = `<div class="roomstrip"><span class="r-avs">${here.slice(0, 5).map((p) => `<span class="r-av">${avatarSvg(p.seed ?? 1, { size: 30, label: p.name })}</span>`).join('')}</span>
+      <span class="grow"><b>Едем вместе</b><small>${esc(here.map((p) => (p.me ? 'вы' : p.name)).join(', '))}</small></span>
+      <button class="btn sm" id="rlink">${ico('share')}<span>Ссылка</span></button><button class="icon-btn" id="rleave" aria-label="Выйти из комнаты">×</button></div><div class="err" id="rmsg"></div>`;
+    $('#rlink').onclick = () => shareRoom(r.id, $('#rmsg'));
+    $('#rleave').onclick = () => { leaveRoom(); T.win = null; T.reels = null; T.tries = 0; paint(); };
   };
-  $('#nb').onchange = (e) => {
-    T.nearby = e.target.checked; ls.set('gas_nearby', T.nearby ? '1' : '0'); T.radius = 5;
-    if (T.nearby && T.geo === 'failed') { T.manual = true; T.geo = 'idle'; $('#pickwrap').classList.remove('hidden'); }
-    else if (T.nearby && !T.center) locate();
-    paintStatus();
+  const leaveRoom = () => { T.room = null; clearInterval(T.pollT); T.pollT = 0; };
+  const joinRoom = (st) => {
+    T.room = st; T.shown = st.spins.length; T.tries = 0;
+    const lastSpin = st.spins[st.spins.length - 1];
+    if (lastSpin && sumById(lastSpin.place_id)) { T.win = sumById(lastSpin.place_id); T.reels = lastSpin.reels; T.last = lastSpin.place_id; }
+    clearInterval(T.pollT); T.pollT = setInterval(poll, 3000);
   };
-  $('#rig').onchange = (e) => { T.rig = e.target.checked; ls.set('gas_rig', T.rig ? '1' : '0'); };
-  paintStatus(); locate();
-  if (DESK.matches) {
-    S.keyFn = (e) => { if (e.code !== 'Space' || /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(document.activeElement?.tagName || '')) return; e.preventDefault(); pull(); };
-    document.addEventListener('keydown', S.keyFn);
+  async function poll() {
+    if (!T.room || T.spinning || document.hidden || !host.isConnected) return;
+    let st; try { st = await api.roomGet(T.room.id); } catch (e) {
+      if (e instanceof ApiError && e.kind === 'rejected' && /no_room/.test(e.detail)) { leaveRoom(); T.note = 'Комната закрылась: прошло больше 12 часов.'; if (host.isConnected) paint(); }
+      return;
+    }
+    if (!T.room || T.spinning || !host.isConnected) return;
+    const fresh = st.spins.length > T.shown; const before = JSON.stringify(T.room.spins.map((s) => s.veto_name));
+    T.room = st;
+    if (fresh) { const s = st.spins[st.spins.length - 1]; T.shown = st.spins.length; await play(sumById(s.place_id), s.reels, [null, null, null]); }
+    else if (before !== JSON.stringify(st.spins.map((s) => s.veto_name))) { reveal(false); paint(); }
+    else paintRoom();
+  }
+  $('#together').onclick = () => guard(async () => {
+    const st = await api.roomCreate(); joinRoom(st); T.win = null; T.reels = null; T.held = [null, null, null]; paint(); shareRoom(st.id, $('#rmsg'));
+  }, $('#out'));
+
+  // ---- прокрут ----
+  async function play(win, reels, held) { // показать результат на табло (свой прокрут или чужой из комнаты)
+    if (!win) return;
+    T.spinning = true; paint();
+    const b = board(host, held); b.start();
+    await b.finish(reels, win.place.name);
+    T.spinning = false; T.win = win; T.reels = reels; T.last = win.place.id;
+    if (host.isConnected) { reveal(true); paint(); }
+  }
+  async function spin() {
+    if (T.spinning || triesLeft() <= 0) return;
+    const xs = pool(); if (!xs.length) return;
+    T.note = '';
+    if (!room()) { const win = pick(xs); T.tries++; return play(win, reelsOf(win, T.center), T.held); }
+    // в комнате: сначала база принимает прокрут (кто-то мог крутить одновременно), табло листается, пока ждём
+    T.spinning = true; paint(); $('#out').innerHTML = '';
+    const b = board(host, T.held); b.start();
+    const win = pick(xs); const reels = reelsOf(win, T.center);
+    let st;
+    try { st = await api.roomSpin(room().id, T.shown, win.place.id, reels); } catch (e) { b.stop(); T.spinning = false; paint(); guard(() => Promise.reject(e), $('#out')); return; }
+    T.room = st; T.shown = st.spins.length;
+    const s = st.spins[st.spins.length - 1];
+    if (!st.accepted) T.note = st.tries_left <= 0 ? 'Попытки кончились: решено.' : 'Кто-то крутил одновременно с вами — вот его результат.';
+    const w = s ? sumById(s.place_id) : null;
+    if (!w) { b.stop(); T.spinning = false; paint(); return; }
+    await b.finish(s.reels, w.place.name);
+    T.spinning = false; T.win = w; T.reels = s.reels; T.last = w.place.id;
+    if (host.isConnected) { reveal(true); paint(); }
   }
 
-  // ---- ручка: тянется пальцем вправо или нажимается ----
-  let drag = null;
-  knob.addEventListener('pointerdown', (e) => {
-    if (knob.disabled) return;
-    hint?.kill(); if (G()) G().set(knob, { x: 0 });
-    drag = { x0: e.clientX, dx: 0, moved: false }; knob.setPointerCapture(e.pointerId);
-  });
-  knob.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    drag.dx = Math.max(0, Math.min(maxX(), e.clientX - drag.x0));
-    if (drag.dx > 6) drag.moved = true;
-    if (G()) G().set(knob, { x: drag.dx });
-  });
-  const release = () => {
-    if (!drag) return;
-    const d = drag; drag = null;
-    if (!d.moved || d.dx > maxX() * 0.6) pull();
-    else if (G()) G().to(knob, { x: 0, duration: 0.5, ease: 'elastic.out(1,0.5)' });
-  };
-  knob.addEventListener('pointerup', release);
-  knob.addEventListener('pointercancel', () => { drag = null; if (G()) G().to(knob, { x: 0, duration: 0.3 }); });
-  knob.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pull(); } });
-
-  function pull() {
-    const p = pool(); if (!p.length || T.spinning || (T.nearby && !T.center)) return;
-    T.spinning = true; knob.disabled = true; $('#out').innerHTML = ''; hint?.kill();
-    const win = T.rig ? pickWeighted(p, slotWeights(p, { center: T.nearby ? T.center : null })) : p[Math.floor(Math.random() * p.length)];
-    const names = p.map((s) => s.place.name);
-    const any = () => names[Math.floor(Math.random() * names.length)];
-    const still = calm();
-    const done = [];
-    [0, 1, 2].forEach((i) => {
-      const n = 14 + i * 6;
-      const seq = ['', 'GAS'[i], '', ...Array.from({ length: n }, any), any(), win.place.name, any()];
-      const strip = $(`#reel${i} .strip`);
-      strip.innerHTML = seq.map((x, k) => `<div class="cell${k === 1 ? ' idle' : ''}${k === seq.length - 2 ? ' last' : ''}">${esc(x)}</div>`).join('');
-      const endY = -(seq.length - 3) * ($(`#reel${i} .cell`)?.offsetHeight || ROW);
-      const land = () => { strip.style.transform = `translateY(${endY}px)`; strip.querySelector('.last').classList.add('hit'); if (done.push(i) === 3) reveal(win); };
-      if (still) return land();
-      const dur = 1.7 + i * 0.55;
-      G().set(strip, { y: 0 });
-      G().to($(`#reel${i}`), { filter: 'blur(2.5px)', duration: 0.3, delay: 0.3 });
-      G().to($(`#reel${i}`), { filter: 'blur(0px)', duration: 0.45, delay: 0.3 + dur - 0.7 });
-      G().to(strip, { y: endY, duration: dur, delay: 0.3, ease: 'back.out(0.55)', onComplete: land });
-    });
-    if (!still) {
-      const x = maxX();
-      G().to(knob, { x, duration: 0.2, ease: 'power2.in' });
-      G().to(knob, { x: 0, duration: 0.7, delay: 0.3, ease: 'elastic.out(1,0.55)' });
-    }
-  }
-
-  function reveal(win) {
-    T.spinning = false;
+  // ---- результат ----
+  function reveal(fx) {
+    const win = T.win; if (!win) return;
     const km = T.center ? distanceKm(T.center.lat, T.center.lon, win.place.lat, win.place.lon) : null;
-    $('#out').innerHTML = `<div class="res-grid"><div class="result"><div class="row" style="align-items:flex-start;gap:12px"><div class="grow"><h3>${esc(win.place.name)}</h3>
-      <div class="muted small" style="margin-top:6px">${esc(win.place.address)}${km != null ? ` · ${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''}</div></div>
-      <div class="big ${scoreClass(win.score)}">${fmt(win.score)}<small>/10</small></div></div>
-      ${fmtPrice(win.price) ? `<div class="small muted" style="margin-top:6px">Цены: <b style="color:var(--ink)">${fmtPrice(win.price)}</b> на человека</div>` : ''}
-      ${barsHtml(win.scores, ['taste', 'service', 'toilet'])}
-      <div class="row"><a class="btn accent" style="flex:1.3" href="${esc(mapsLink(win.place.lat, win.place.lon))}" target="_blank" rel="noopener">${ico('map')}<span class="lbl-long">Открыть в картах</span><span class="lbl-short">Карты</span></a>
-      <button class="btn icon-only" id="slotshare" aria-label="Поделиться местом" title="Поделиться">${ico('share')}</button>
-      <button class="btn" style="flex:1" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div><div class="err" id="slotmsg"></div></div>
-      <div id="resmap" class="res-map dk-only"></div></div>`;
-    $('#slotshare').onclick = () => sharePlace(win, $('#slotmsg'));
+    const jack = jackpotOf(win);
+    const tag = jack ? `ДЖЕКПОТ · ${jack}` : !win.count ? 'НЕИЗВЕДАННОЕ · ИЗ «ХОЧУ СХОДИТЬ»' : isThin(win) ? 'НЕИЗВЕДАННОЕ · МАЛО ОЦЕНОК'
+      : win.reviews.some((r) => r.mine) ? 'ПРОВЕРЕННОЕ' : 'ПРОВЕРЕННОЕ · ВЫ ЗДЕСЬ НЕ БЫЛИ';
+    const r = room(); const s = r ? r.spins[r.spins.length - 1] : null;
+    const vetoed = !!s?.veto_name;
+    const lastVeto = r ? [...r.spins].reverse().find((x) => x.veto_name) : null;
+    const score = isThin(win) ? `<span class="thin-tag">${win.count ? 'МАЛО ДАННЫХ' : 'НЕТ ОЦЕНОК'}</span>` : `<div class="big ${scoreClass(win.score)}">${fmt(win.score)}<small>/10</small></div>`;
+    $('#out').innerHTML = `<div class="result${jack && !vetoed ? ' jack' : ''}${vetoed ? ' vetoed' : ''}">
+      <div class="r-tag">${vetoed ? `ВЕТО · ${esc(s.veto_me ? 'ВЫ' : s.veto_name.toUpperCase())}` : esc(tag)}</div>
+      <div class="row" style="align-items:flex-start;gap:12px"><div class="grow"><h3>${esc(win.place.name)}</h3>
+        <div class="muted small" style="margin-top:6px">${esc([win.place.kind, win.place.address, km != null ? `${km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)} км` : ''].filter(Boolean).join(' · '))}</div></div>${score}</div>
+      <div class="row" style="margin-top:10px;gap:10px">${isThin(win) ? '' : stars(win.stars)}<span class="small muted">${esc(fmtPrice(win.price) ? `${fmtPrice(win.price)} на человека` : 'цены пока неизвестны')}</span></div>
+      ${s ? `<div class="small muted" style="margin-top:8px">Крутил${s.by_me ? 'и вы' : ` ${esc(s.by_name)}`} · попытка ${r.spins.filter((x) => !x.veto_name || x.n === s.n).length} из 3</div>` : ''}
+      ${T.note ? `<div class="small" style="margin-top:8px;color:var(--vio)">${esc(T.note)}</div>` : ''}
+      <div class="row" style="margin-top:14px">${vetoed ? '' : `<a class="btn accent grow" id="letsgo" href="${esc(mapsLink(win.place.lat, win.place.lon))}" target="_blank" rel="noopener">Едем!</a>`}
+        ${r ? `<button class="btn veto" id="veto" ${!r.my_veto || vetoed ? 'disabled' : ''}>${r.my_veto ? 'Вето · у вас 1' : 'Вето потрачено'}</button>`
+          : `<button class="btn icon-only" id="slotshare" aria-label="Поделиться местом" title="Поделиться">${ico('share')}</button>`}
+        <button class="btn" data-act="go" data-view="detail" data-id="${win.place.id}">Подробнее</button></div>
+      ${lastVeto && lastVeto !== s ? `<div class="small muted" style="margin-top:10px">${esc(lastVeto.veto_me ? 'Вы наложили' : `${lastVeto.veto_name} наложил(а)`)} вето на «${esc(sumById(lastVeto.place_id)?.place.name || 'место')}»</div>` : ''}
+      <div class="err" id="slotmsg"></div></div>`;
+    const lg = $('#letsgo'); if (lg) lg.onclick = () => { ls.set('gas_trip', JSON.stringify({ id: win.place.id, at: Date.now() })); };
+    const sh = $('#slotshare'); if (sh) sh.onclick = () => sharePlace(win, $('#slotmsg'));
+    const vb = $('#veto');
+    if (vb) vb.onclick = () => guard(async () => {
+      vb.disabled = true; const st = await api.roomVeto(r.id, s.n); T.room = st;
+      T.note = st.accepted ? 'Вето принято: можно крутить ещё.' : 'Вето не прошло: кто-то уже крутил заново или вето потрачено.';
+      if (st.spins.length > T.shown) { T.shown = st.spins.length; const x = st.spins[st.spins.length - 1]; T.win = sumById(x.place_id) || T.win; T.reels = x.reels; }
+      reveal(false); paint();
+    }, $('#slotmsg'));
     if (DESK.matches && window.L) {
+      const m = $('#resmap'); m.classList.remove('hidden');
       if (S.map) { S.map.remove(); S.map = null; }
       S.map = L.map('resmap', { zoomControl: false, attributionControl: false }).setView([win.place.lat, win.place.lon], 15); tiles().addTo(S.map);
-      L.marker([win.place.lat, win.place.lon], { icon: L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pin"><span>${win.stars}</span></div>` }) }).addTo(S.map);
+      L.marker([win.place.lat, win.place.lon], { icon: L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pin"><span>${isThin(win) ? '?' : win.stars}</span></div>` }) }).addTo(S.map);
     }
-    paintStatus();
-    if (calm()) return;
-    const g = G();
-    g.fromTo('.reel .cell.hit', { scale: 0.8 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
-    g.fromTo('#machine', { boxShadow: '0 0 0 0 rgba(200,242,90,0)' }, { boxShadow: '0 0 36px 2px rgba(200,242,90,.35)', duration: 0.4, yoyo: true, repeat: 1 });
-    const machine = $('#machine'); const colors = ['#C8F25A', '#8F82FF', '#FFB86B'];
-    for (let k = 0; k < 18; k++) {
+    if (!fx || vetoed) return;
+    sound(jack ? 'jack' : 'win'); buzz(jack ? [20, 60, 20, 60, 40] : 25);
+    const g = G(); if (calm() || !g) return;
+    g.from('.result', { y: 24, autoAlpha: 0, duration: 0.45, ease: 'power3.out' });
+    if (!jack) return;
+    const bd = $('#board'); const colors = ['#C8F25A', '#8F82FF', '#FFB86B'];
+    g.fromTo(bd, { boxShadow: '0 0 0 0 rgba(200,242,90,0)' }, { boxShadow: '0 0 40px 4px rgba(200,242,90,.45)', duration: 0.4, yoyo: true, repeat: 3 });
+    for (let k = 0; k < 28; k++) {
       const el = Object.assign(document.createElement('i'), { className: 'fx' }); el.style.background = colors[k % 3];
-      const band = machine.querySelector('.band'); el.style.left = `${machine.clientWidth / 2}px`; el.style.top = `${band ? band.offsetTop + band.offsetHeight / 2 + 16 : 78}px`; machine.appendChild(el);
-      g.fromTo(el, { x: 0, y: 0, scale: 1, rotation: 0, autoAlpha: 1 }, { x: rnd(-150, 150), y: rnd(-80, 70), rotation: rnd(-200, 200), scale: 0, duration: 0.9, ease: 'power2.out', onComplete: () => el.remove() });
+      el.style.left = `${bd.clientWidth / 2}px`; el.style.top = `${bd.clientHeight - 40}px`; bd.appendChild(el);
+      g.fromTo(el, { x: 0, y: 0, scale: 1, rotation: 0, autoAlpha: 1 }, { x: rnd(-170, 170), y: rnd(-150, 40), rotation: rnd(-260, 260), scale: 0, duration: 1.1, ease: 'power2.out', onComplete: () => el.remove() });
     }
-    g.from('.result', { y: 24, autoAlpha: 0, duration: 0.5, ease: 'power3.out' });
-    g.from('.result .seg5 i.on', { scaleX: 0, transformOrigin: 'left center', duration: 0.4, stagger: 0.04, delay: 0.2 });
   }
+
+  // ---- кнопки ----
+  $('#spin').onclick = spin;
+  $('#snd').onclick = (e) => { SND.on = !SND.on; ls.set('gas_sound', SND.on ? '1' : '0'); e.currentTarget.setAttribute('aria-pressed', String(SND.on)); e.currentTarget.innerHTML = ico(SND.on ? 'sound' : 'mute'); if (SND.on) sound('tick'); };
+  $app.querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => {
+    T.mode = b.dataset.mode; ls.set('gas_mode', T.mode); T.held = [null, null, null];
+    $app.querySelectorAll('[data-mode]').forEach((x) => { const on = x.dataset.mode === T.mode; x.classList.toggle('on', on); x.setAttribute('aria-checked', String(on)); });
+    $app.querySelectorAll('[data-hold]').forEach((x) => { x.classList.remove('on'); x.setAttribute('aria-pressed', 'false'); });
+    if (!T.win) $('#out').innerHTML = ''; paint();
+  }; });
+  $app.querySelectorAll('[data-hold]').forEach((b) => { b.onclick = () => {
+    const i = Number(b.dataset.hold); if (!T.reels || T.reels[i] == null) return;
+    T.held[i] = T.held[i] == null ? T.reels[i] : null;
+    b.classList.toggle('on', T.held[i] != null); b.setAttribute('aria-pressed', String(T.held[i] != null)); paint();
+  }; });
+  const locate = () => {
+    if (T.center || T.geo !== 'idle') return;
+    if (!navigator.geolocation) { T.geo = 'failed'; return; }
+    T.geo = 'asking';
+    navigator.geolocation.getCurrentPosition(
+      (p) => { T.center = { lat: p.coords.latitude, lon: p.coords.longitude }; T.geo = 'done'; T.manual = false; if (host.isConnected) paint(); },
+      () => { T.geo = 'failed'; if (host.isConnected) paint(); },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 });
+  };
+  if (DESK.matches) {
+    S.keyFn = (e) => { if (e.code !== 'Space' || /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(document.activeElement?.tagName || '')) return; e.preventDefault(); spin(); };
+    document.addEventListener('keydown', S.keyFn);
+  }
+  S.onLeave = () => { clearInterval(T.pollT); T.pollT = 0; T.spinning = false; };
+  if (T.room && !T.pollT) T.pollT = setInterval(poll, 3000);
+  locate(); paint();
+  if (T.win) reveal(false);
+  if (T.joinId) { // открыли ссылку на комнату
+    const id = T.joinId; T.joinId = null;
+    guard(async () => { const st = await api.roomGet(id); joinRoom(st); paint(); if (T.win) reveal(false); }, $('#out'))
+      .then(() => { if (!T.room && host.isConnected) $('#out').innerHTML = `<div class="notice">${ico('warn')}<span>Комната не открылась: ссылка устарела (комната живёт 12 часов) или связь плохая.</span></div>`; });
+  }
+}
+
+// Ссылка на комнату: на телефоне — меню «Поделиться», на компьютере — в буфер. Личный ключ в ссылку не попадает.
+async function shareRoom(id, msg) {
+  const url = roomLink(location.origin + location.pathname, id);
+  const text = `Крутим автомат G.A.S. вместе: ${url}`;
+  if (matchMedia('(pointer: coarse)').matches && navigator.share) { try { await navigator.share({ title: 'G.A.S. · вместе', text }); return; } catch (e) { if (e?.name === 'AbortError') return; } }
+  try { await navigator.clipboard.writeText(text); if (msg) { msg.style.color = 'var(--acc-text)'; msg.textContent = 'Ссылка на комнату скопирована. Отправьте её друзьям.'; } }
+  catch { if (msg) { msg.style.color = ''; msg.textContent = `Ссылка на комнату: ${url}`; } }
 }
 
 // ---------- старт ----------
