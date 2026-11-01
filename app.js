@@ -674,6 +674,15 @@ const needLeaflet = () => {
   $app.insertAdjacentHTML('beforeend', '<div class="notice">Карта не загрузилась (нет файла библиотеки или нет сети).</div>');
   return false;
 };
+// Leaflet: если карту убрали посреди анимации масштаба (быстро переключили экран), его таймер срабатывает уже без карты
+// и падает с «_leaflet_pos». Карты к этому моменту нет, так что просто пропускаем.
+if (window.L && !L.Map.prototype._gasSafe) {
+  for (const k of ['_onZoomTransitionEnd', '_onPanTransitionEnd']) {
+    const orig = L.Map.prototype[k];
+    if (orig) L.Map.prototype[k] = function (...a) { if (!this._mapPane) return undefined; return orig.apply(this, a); };
+  }
+  L.Map.prototype._gasSafe = true;
+}
 const tiles = () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' });
 
 function viewMap() {
