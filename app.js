@@ -1150,7 +1150,7 @@ function drawCompareIn(host) {
       <span class="grow"><span class="label" style="color:var(--acc-text)">${first ? 'Куда поставить' : 'Ваше новое'}</span><b>${esc(target.place.name)}</b></span>${tVerdict != null ? stars(tVerdict) : ''}</div>
     <h2 class="cmp-q">Это нравится больше?</h2>
     <div class="cmp-stage"><div class="cmp-card" id="ccard">${placeCover(o)}
-      <div class="cmp-bd"><b>${esc(o.place.name)}</b><span class="small muted">${esc(o.place.kind || 'место')} · вы были ${esc(ago(o.reviews.find((r) => r.mine)?.updated_at || ''))}</span>${myV(o) != null ? stars(myV(o)) : ''}</div>
+      <div class="cmp-bd"><b>${esc(o.place.name)}</b><span class="small muted">${esc(o.place.kind || 'место')}${((w) => (w ? ` · вы были ${w === 'сегодня' ? w : `${w} назад`}` : ''))(ago(((r) => r?.updated_at || r?.created_at)(o.reviews.find((x) => x.mine))))}</span>${myV(o) != null ? stars(myV(o)) : ''}</div>
       <span class="stamp yes" id="syes">БОЛЬШЕ</span><span class="stamp no" id="sno">МЕНЬШЕ</span><span class="stamp same" id="ssame">ОДИНАКОВО</span></div></div>
     <div class="cmp-btns"><button class="cb no" data-ans="1" aria-label="Это нравится меньше">✕</button><button class="cb same" data-ans="0" aria-label="Одинаково">=</button><button class="cb yes" data-ans="-1" aria-label="Это нравится больше">♥</button></div>
     <div class="small muted dk-only" style="text-align:center">Клавиши: ← меньше · → больше · ↑ одинаково</div></div>`;
